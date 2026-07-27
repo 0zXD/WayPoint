@@ -28,11 +28,11 @@ export function ClusterDrawer({ memories }: { memories: Memory[] }) {
     <Sheet open={!!openKey && items.length > 0} onOpenChange={(o) => !o && setOpenKey(null)}>
       <SheetContent
         side="left"
-        className="w-full overflow-y-auto border-r border-border/60 bg-background/85 p-0 backdrop-blur-xl sm:max-w-md"
+        className="w-full overflow-y-auto border-r border-border/60 bg-background/90 p-0 backdrop-blur-xl sm:max-w-md [&>button:last-child]:hidden z-[600]"
       >
         {anchor && (
           <div className="flex h-full flex-col">
-            <div className="sticky top-0 z-10 border-b border-border/60 bg-background/70 px-6 py-4 backdrop-blur-xl">
+            <div className="sticky top-0 z-10 border-b border-border/60 bg-background/80 px-6 py-4 backdrop-blur-xl">
               <div className="flex items-start justify-between gap-3">
                 <SheetHeader className="space-y-1 p-0 text-left">
                   <SheetTitle className="font-display text-xl leading-tight tracking-tight">
@@ -49,9 +49,9 @@ export function ClusterDrawer({ memories }: { memories: Memory[] }) {
                   onClick={() => setOpenKey(null)}
                   size="icon"
                   variant="ghost"
-                  className="h-8 w-8 rounded-full"
+                  className="h-9 w-9 rounded-full cursor-pointer hover:bg-accent/60 transition-colors"
                 >
-                  <X className="h-4 w-4" />
+                  <X className="h-4.5 w-4.5" />
                 </Button>
               </div>
             </div>

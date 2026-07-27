@@ -8,7 +8,7 @@ export const WS_BASE =
   (import.meta.env.VITE_WS_BASE_URL as string | undefined)?.replace(/\/$/, "") ??
   API_BASE.replace(/^http/, "ws");
 
-export const API_CONFIGURED = Boolean(import.meta.env.VITE_API_BASE_URL);
+export const API_CONFIGURED = import.meta.env.VITE_DEMO_MODE !== "true";
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {

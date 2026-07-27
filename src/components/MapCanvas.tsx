@@ -182,7 +182,7 @@ function ClusterMarkers({
             <Popup
               closeButton
               autoPan={false}
-              closeOnMapClick={true}
+              closeOnClick={true}
               offset={[0, -20]}
             >
               <ClusterPopup cluster={c} onOpen={() => onOpenCluster(c.key)} />
@@ -351,46 +351,46 @@ function MapControls() {
   };
 
   return (
-    <div className="pointer-events-none fixed bottom-6 right-6 z-[500] flex flex-col items-center gap-3 sm:bottom-8 sm:right-8">
-      <div className="glass pointer-events-auto flex flex-col rounded-[1.25rem] p-1.5 shadow-xl border border-border/40">
+    <div className="pointer-events-none fixed bottom-3 right-3 z-[500] flex flex-col items-center gap-2 sm:bottom-6 sm:right-6 sm:gap-3">
+      <div className="glass pointer-events-auto flex flex-col rounded-xl sm:rounded-[1.25rem] p-1 sm:p-1.5 shadow-xl border border-border/40">
         <button
           type="button"
           onClick={() => map.zoomIn()}
-          className="flex h-11 w-11 items-center justify-center rounded-xl text-foreground hover:bg-muted/80 transition-all active:scale-95 cursor-pointer"
+          className="flex h-8 w-8 sm:h-11 sm:w-11 items-center justify-center rounded-lg sm:rounded-xl text-foreground hover:bg-muted/80 transition-all active:scale-95 cursor-pointer"
           title="Zoom in"
           aria-label="Zoom in"
         >
-          <Plus className="h-5 w-5" />
+          <Plus className="h-4 w-4 sm:h-5 sm:w-5" />
         </button>
-        <div className="mx-2 my-0.5 h-px bg-border/40" />
+        <div className="mx-1.5 sm:mx-2 my-0.5 h-px bg-border/40" />
         <button
           type="button"
           onClick={() => map.zoomOut()}
-          className="flex h-11 w-11 items-center justify-center rounded-xl text-foreground hover:bg-muted/80 transition-all active:scale-95 cursor-pointer"
+          className="flex h-8 w-8 sm:h-11 sm:w-11 items-center justify-center rounded-lg sm:rounded-xl text-foreground hover:bg-muted/80 transition-all active:scale-95 cursor-pointer"
           title="Zoom out"
           aria-label="Zoom out"
         >
-          <Minus className="h-5 w-5" />
+          <Minus className="h-4 w-4 sm:h-5 sm:w-5" />
         </button>
-        <div className="mx-2 my-0.5 h-px bg-border/40" />
+        <div className="mx-1.5 sm:mx-2 my-0.5 h-px bg-border/40" />
         <button
           type="button"
           onClick={handleLocateMe}
-          className="flex h-11 w-11 items-center justify-center rounded-xl text-foreground hover:bg-muted/80 transition-all active:scale-95 cursor-pointer"
+          className="flex h-8 w-8 sm:h-11 sm:w-11 items-center justify-center rounded-lg sm:rounded-xl text-foreground hover:bg-muted/80 transition-all active:scale-95 cursor-pointer"
           title="My location"
           aria-label="My location"
         >
-          <Navigation className="h-5 w-5 text-primary" />
+          <Navigation className="h-4 w-4 sm:h-5 sm:w-5 text-primary" />
         </button>
-        <div className="mx-2 my-0.5 h-px bg-border/40" />
+        <div className="mx-1.5 sm:mx-2 my-0.5 h-px bg-border/40" />
         <button
           type="button"
           onClick={() => map.flyTo([30, 5], 3, { duration: 1 })}
-          className="flex h-11 w-11 items-center justify-center rounded-xl text-foreground hover:bg-muted/80 transition-all active:scale-95 cursor-pointer"
+          className="flex h-8 w-8 sm:h-11 sm:w-11 items-center justify-center rounded-lg sm:rounded-xl text-foreground hover:bg-muted/80 transition-all active:scale-95 cursor-pointer"
           title="Reset view"
           aria-label="Reset view"
         >
-          <Compass className="h-5 w-5 text-muted-foreground hover:text-foreground" />
+          <Compass className="h-4 w-4 sm:h-5 sm:w-5 text-muted-foreground hover:text-foreground" />
         </button>
       </div>
 
@@ -414,45 +414,45 @@ function ClusterPopup({
     <button
       type="button"
       onClick={onOpen}
-      className="group block w-[260px] text-left text-foreground transition-transform active:scale-[0.99]"
+      className="group block w-[215px] sm:w-[260px] text-left text-foreground transition-transform active:scale-[0.99]"
     >
       {sample.imageUrl && (
-        <div className="relative aspect-[16/10] w-full overflow-hidden">
+        <div className="relative aspect-[16/9.5] sm:aspect-[16/10] w-full overflow-hidden rounded-t-xl sm:rounded-t-2xl">
           <img
             src={sample.imageUrl}
             alt={sample.title}
             className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.03]"
           />
-          <div className="absolute inset-x-0 bottom-0 h-14 bg-gradient-to-t from-background/80 to-transparent" />
+          <div className="absolute inset-x-0 bottom-0 h-10 sm:h-14 bg-gradient-to-t from-background/80 to-transparent" />
           {(sample.visibility || sample.collection) && (
-            <div className="absolute bottom-2 left-2">
+            <div className="absolute bottom-1.5 left-1.5 sm:bottom-2 sm:left-2">
               <CollectionBadge visibility={sample.visibility} collection={sample.collection} />
             </div>
           )}
           {multiple && (
-            <div className="glass absolute right-2 top-2 flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium text-foreground shadow-sm">
-              <Images className="h-3 w-3 text-primary" />
+            <div className="glass absolute right-1.5 top-1.5 sm:right-2 sm:top-2 flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[9px] sm:text-[10px] font-medium text-foreground shadow-sm">
+              <Images className="h-2.5 w-2.5 sm:h-3 sm:w-3 text-primary" />
               {count} photos
             </div>
           )}
         </div>
       )}
-      <div className="space-y-1.5 px-3.5 py-3">
-        <h3 className="font-display text-[15px] font-semibold leading-tight tracking-tight">
+      <div className="space-y-1 px-2.5 py-2.5 sm:space-y-1.5 sm:px-3.5 sm:py-3">
+        <h3 className="font-display text-xs sm:text-[15px] font-semibold leading-tight tracking-tight">
           {sample.title}
         </h3>
         {sample.locationTag && (
-          <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
-            <MapPin className="h-3 w-3 text-primary" />
+          <div className="flex items-center gap-1 text-[10px] sm:text-[11px] text-muted-foreground">
+            <MapPin className="h-2.5 w-2.5 sm:h-3 sm:w-3 text-primary shrink-0" />
             <span className="truncate">{sample.locationTag}</span>
             <span className="opacity-60">·</span>
-            <span>{formatDistanceToNow(new Date(sample.createdAt), { addSuffix: true })}</span>
+            <span className="shrink-0">{formatDistanceToNow(new Date(sample.createdAt), { addSuffix: true })}</span>
           </div>
         )}
-        <p className="line-clamp-2 pt-1 text-xs leading-relaxed text-foreground/80">
+        <p className="line-clamp-2 text-[11px] sm:text-xs leading-relaxed text-foreground/80 pt-0.5">
           {sample.narrative}
         </p>
-        <div className="pt-1.5 text-[11px] font-medium text-primary opacity-80 transition-opacity group-hover:opacity-100">
+        <div className="pt-1 text-[10px] sm:text-[11px] font-medium text-primary opacity-80 transition-opacity group-hover:opacity-100">
           {multiple ? `View all ${count} photos →` : "Open details →"}
         </div>
       </div>

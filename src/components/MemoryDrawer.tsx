@@ -24,7 +24,7 @@ export function MemoryDrawer({ memories }: { memories: Memory[] }) {
     <Sheet open={!!memory} onOpenChange={(o) => !o && setId(null)}>
       <SheetContent
         side="right"
-        className="w-full overflow-y-auto p-0 sm:max-w-md"
+        className="w-full overflow-y-auto p-0 sm:max-w-md z-[600]"
       >
         {memory && <DrawerBody memory={memory} onClose={() => setId(null)} />}
       </SheetContent>

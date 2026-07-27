@@ -142,5 +142,12 @@ vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
 
+# Go backend binaries & environment secrets
+backend/server
+backend/server.exe
+backend/*.exe
+backend/.env
+!backend/.env.example
+
 # temporary 
 README.md

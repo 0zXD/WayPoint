@@ -12,6 +12,11 @@ export function connectActivity(
   onEvent: (e: ActivityEvent) => void,
   onStatus: (s: WSStatus) => void,
 ): WSHandle {
+  if (!token) {
+    onStatus("idle");
+    return { close: () => {} };
+  }
+
   if (!API_CONFIGURED) {
     onStatus("demo");
     // Emit synthetic events every few seconds so the feed feels live
@@ -41,7 +46,7 @@ export function connectActivity(
   const open = () => {
     onStatus("connecting");
     const url = `${WS_BASE}/api/v1/ws`;
-    ws = token ? new WebSocket(url, [`bearer.${token}`]) : new WebSocket(url);
+    ws = new WebSocket(url, [`bearer.${token}`]);
     ws.onopen = () => {
       attempt = 0;
       onStatus("open");

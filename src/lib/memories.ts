@@ -157,33 +157,46 @@ export function within(m: Memory, b: BBox): boolean {
   }
 }
 
+function createLocalMemory(form: FormData): Memory {
+  const file = form.get("image") as File | null;
+  const imageUrl = file ? URL.createObjectURL(file) : "";
+  const m: Memory = {
+    id: `local-${Date.now()}`,
+    title: (form.get("title") as string) || "Untitled",
+    narrative: (form.get("narrative") as string) || "",
+    imageUrl,
+    lat: Number(form.get("lat")) || 0,
+    lng: Number(form.get("lng")) || 0,
+    locationTag: (form.get("locationTag") as string) || undefined,
+    visibility: ((form.get("visibility") as Memory["visibility"]) || "private"),
+    authorName: "You",
+    createdAt: new Date().toISOString(),
+  };
+  DEMO.push(m);
+  return m;
+}
+
 export async function listMemories(bbox: BBox): Promise<Memory[]> {
   if (!API_CONFIGURED) {
-    // Return demo data filtered by viewport
     return DEMO.filter((m) => within(m, bbox));
   }
-  const q = `${bbox.minLng},${bbox.minLat},${bbox.maxLng},${bbox.maxLat}`;
-  return apiFetch<Memory[]>(`/api/v1/memories?bbox=${encodeURIComponent(q)}`);
+  try {
+    const q = `${bbox.minLng},${bbox.minLat},${bbox.maxLng},${bbox.maxLat}`;
+    return await apiFetch<Memory[]>(`/api/v1/memories?bbox=${encodeURIComponent(q)}`);
+  } catch (err) {
+    console.warn("Backend memories endpoint not available yet, falling back to demo data:", err);
+    return DEMO.filter((m) => within(m, bbox));
+  }
 }
 
 export async function uploadMemory(form: FormData): Promise<Memory> {
   if (!API_CONFIGURED) {
-    const file = form.get("image") as File | null;
-    const imageUrl = file ? URL.createObjectURL(file) : "";
-    const m: Memory = {
-      id: `local-${Date.now()}`,
-      title: (form.get("title") as string) || "Untitled",
-      narrative: (form.get("narrative") as string) || "",
-      imageUrl,
-      lat: Number(form.get("lat")) || 0,
-      lng: Number(form.get("lng")) || 0,
-      locationTag: (form.get("locationTag") as string) || undefined,
-      visibility: ((form.get("visibility") as Memory["visibility"]) || "private"),
-      authorName: "You",
-      createdAt: new Date().toISOString(),
-    };
-    DEMO.push(m);
-    return m;
+    return createLocalMemory(form);
   }
-  return apiFetch<Memory>(`/api/v1/memories`, { method: "POST", body: form });
+  try {
+    return await apiFetch<Memory>(`/api/v1/memories`, { method: "POST", body: form });
+  } catch (err) {
+    console.warn("Backend memory upload endpoint not available yet, saving locally:", err);
+    return createLocalMemory(form);
+  }
 }
