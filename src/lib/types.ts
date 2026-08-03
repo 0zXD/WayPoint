@@ -2,12 +2,10 @@ export interface Memory {
   id: string;
   title: string;
   narrative: string;
-  imageUrl: string;
+  photos?: { id: string; url: string }[];
   lat: number;
   lng: number;
   locationTag?: string;
-  visibility: "public" | "shared" | "private";
-  collection?: string;
   authorName?: string;
   authorAvatar?: string;
   createdAt: string;

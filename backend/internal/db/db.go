@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 
+	"os"
+
 	"waypoint-backend/internal/config"
 	"waypoint-backend/internal/models"
 
@@ -56,23 +58,12 @@ func Connect(cfg *config.Config) (*DB, error) {
 }
 
 func (db *DB) InitSchema() error {
-	schema := `
-	CREATE TABLE IF NOT EXISTS users (
-		id VARCHAR(64) PRIMARY KEY,
-		email VARCHAR(255) UNIQUE NOT NULL,
-		password_hash VARCHAR(255) NOT NULL DEFAULT '',
-		name VARCHAR(255) NOT NULL,
-		avatar_url TEXT DEFAULT '',
-		google_id VARCHAR(255) UNIQUE,
-		created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-		updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-	);
+	schemaBytes, err := os.ReadFile("internal/db/schema.sql")
+	if err != nil {
+		return fmt.Errorf("failed to read schema.sql: %w", err)
+	}
 
-	CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
-	CREATE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id);
-	`
-
-	_, err := db.Exec(schema)
+	_, err = db.Exec(string(schemaBytes))
 	if err != nil {
 		return fmt.Errorf("failed to execute init schema: %w", err)
 	}

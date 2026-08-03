@@ -3,6 +3,7 @@ import { lazy, Suspense, useState } from "react";
 import { Header } from "@/components/Header";
 import { UploadModal } from "@/components/UploadModal";
 import { ClusterDrawer } from "@/components/ClusterDrawer";
+import { DraftSyncBanner } from "@/components/DraftSyncBanner";
 
 import { ActivityFeed } from "@/components/ActivityFeed";
 import { API_CONFIGURED } from "@/lib/api";
@@ -65,6 +66,7 @@ function Index() {
 
       <ActivityFeed onStatus={setWsStatus} />
       <UploadModal mapCenter={center} />
+      <DraftSyncBanner />
       <ClusterDrawer memories={memories} />
     </div>
   );
