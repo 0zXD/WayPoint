@@ -169,7 +169,7 @@ func (h *MemoryHandler) ListMemories(w http.ResponseWriter, r *http.Request) {
 
 	// Since longitude can wrap around (-180 to 180), bounding box queries usually require careful logic.
 	// For simplicity, we just query lat/lng within the bounds, ignoring the wrap around logic for now.
-	
+
 	query := `
 		SELECT m.id, m.user_id, m.title, m.narrative, m.lat, m.lng, m.location_tag, m.created_at, u.name, COALESCE(u.avatar_url, ''),
 		       ARRAY_REMOVE(ARRAY_AGG(p.id), NULL) AS photo_ids
@@ -198,7 +198,7 @@ func (h *MemoryHandler) ListMemories(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
-		
+
 		m.Photos = make([]models.PhotoResponse, 0)
 		for _, pid := range photoIDs {
 			m.Photos = append(m.Photos, models.PhotoResponse{
@@ -206,7 +206,7 @@ func (h *MemoryHandler) ListMemories(w http.ResponseWriter, r *http.Request) {
 				URL: fmt.Sprintf("/api/v1/memories/photo/%s", pid),
 			})
 		}
-		
+
 		memories = append(memories, m)
 	}
 
@@ -251,7 +251,7 @@ func (h *MemoryHandler) SearchMemories(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
-		
+
 		m.Photos = make([]models.PhotoResponse, 0)
 		for _, pid := range photoIDs {
 			m.Photos = append(m.Photos, models.PhotoResponse{
@@ -259,7 +259,7 @@ func (h *MemoryHandler) SearchMemories(w http.ResponseWriter, r *http.Request) {
 				URL: fmt.Sprintf("/api/v1/memories/photo/%s", pid),
 			})
 		}
-		
+
 		memories = append(memories, m)
 	}
 
@@ -393,7 +393,7 @@ func (h *MemoryHandler) UpdateMemory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	files := r.MultipartForm.File["images"]
-	// Determine how many photos this memory currently has to enforce the 4 limit, 
+	// Determine how many photos this memory currently has to enforce the 4 limit,
 	// but for simplicity we will just let the frontend enforce the 4 photo limit
 	// or they can upload up to 4 new ones.
 	if len(files) > 4 {

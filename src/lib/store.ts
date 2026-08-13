@@ -17,6 +17,9 @@ interface AppState {
   activeSearchPopupId: string | null;
   setActiveSearchPopupId: (id: string | null) => void;
 
+  activeSearchMemory: Memory | null;
+  setActiveSearchMemory: (memory: Memory | null) => void;
+
   bbox: BBox | null;
   setBBox: (bbox: BBox) => void;
 
@@ -49,6 +52,9 @@ export const useAppStore = create<AppState>()(
 
       activeSearchPopupId: null,
       setActiveSearchPopupId: (activeSearchPopupId) => set({ activeSearchPopupId }),
+
+      activeSearchMemory: null,
+      setActiveSearchMemory: (activeSearchMemory) => set({ activeSearchMemory }),
 
       bbox: null,
       setBBox: (bbox) => set({ bbox }),

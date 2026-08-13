@@ -24,7 +24,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { ThemeToggle } from "./ThemeToggle";
 import { useAppStore } from "@/lib/store";
 import { login, signup, loginWithGoogle, logout } from "@/lib/auth";
-import { API_CONFIGURED } from "@/lib/api";
+
 import type { WSStatus } from "@/lib/ws";
 import { cn } from "@/lib/utils";
 
@@ -38,6 +38,7 @@ export function Header({
   const user = useAppStore((s) => s.user);
   const openClusterKey = useAppStore((s) => s.openClusterKey);
   const setActiveSearchPopupId = useAppStore((s) => s.setActiveSearchPopupId);
+  const setActiveSearchMemory = useAppStore((s) => s.setActiveSearchMemory);
   const isPickingLocation = useAppStore((s) => s.isPickingLocation);
   const setIsPickingLocation = useAppStore((s) => s.setIsPickingLocation);
   const isDrawerOpen = !!openClusterKey;
@@ -80,7 +81,6 @@ export function Header({
     connecting: { color: "bg-yellow-500 animate-pulse", label: "Connecting" },
     open: { color: "bg-success animate-pulse", label: "Live Pipeline" },
     closed: { color: "bg-destructive", label: "Offline" },
-    demo: { color: "bg-primary animate-pulse", label: "Demo" },
   };
   const status = statusMap[wsStatus];
 
@@ -107,18 +107,7 @@ export function Header({
     }
   };
 
-  const handleQuickDemo = async () => {
-    setLoading(true);
-    try {
-      const res = await login("explorer@waypoint.app", "demo123");
-      toast.success(`Welcome back, ${res.user.name}!`);
-      setPopoverOpen(false);
-    } catch (err) {
-      toast.error("Demo login failed");
-    } finally {
-      setLoading(false);
-    }
-  };
+
 
   return (
     <header
@@ -209,10 +198,12 @@ export function Header({
                   e.preventDefault();
                   if (selectedIndex >= 0 && selectedIndex < searchResults.length) {
                     setActiveSearchPopupId(searchResults[selectedIndex].id);
+                    setActiveSearchMemory(searchResults[selectedIndex]);
                     setSearchQuery("");
                     setSelectedIndex(-1);
                   } else if (searchResults.length > 0) {
                     setActiveSearchPopupId(searchResults[0].id);
+                    setActiveSearchMemory(searchResults[0]);
                     setSearchQuery("");
                     setSelectedIndex(-1);
                   }
@@ -237,6 +228,7 @@ export function Header({
                         onMouseEnter={() => setSelectedIndex(idx)}
                         onClick={() => {
                           setActiveSearchPopupId(result.id);
+                          setActiveSearchMemory(result);
                           setSearchQuery("");
                           setSelectedIndex(-1);
                         }}

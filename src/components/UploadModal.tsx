@@ -227,9 +227,7 @@ export function UploadModal({ mapCenter }: { mapCenter: { lat: number; lng: numb
           <DialogDescription className="text-xs sm:text-sm">
             {editingMemory
               ? "Update your memory's details or photos."
-              : token
-                ? "Drop it where you were. It'll pin to the current map center."
-                : "Signed-out uploads are stored locally in demo mode."}
+              : "Drop it where you were. It'll pin to the current map center."}
           </DialogDescription>
         </DialogHeader>
 

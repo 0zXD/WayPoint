@@ -22,52 +22,6 @@ import {
 import { Button } from "@/components/ui/button";
 import type { AuthUser, BBox, Memory } from "@/lib/types";
 
-const SAMPLE_MEMORIES: Memory[] = [
-  {
-    id: "sample-1",
-    title: "Eiffel Tower Sunset",
-    narrative: "A beautiful evening in Paris, watching the lights sparkle.",
-    lat: 48.8584,
-    lng: 2.2945,
-    locationTag: "Paris, France",
-    createdAt: new Date(Date.now() - 1000 * 60 * 60 * 24 * 2).toISOString(),
-    authorName: "WayPoint",
-    photos: [{ id: "p1", url: "https://images.unsplash.com/photo-1543349689-9a4d426bee8e?auto=format&fit=crop&w=800&q=80" }]
-  },
-  {
-    id: "sample-2",
-    title: "Mount Fuji Hike",
-    narrative: "Breathtaking views from the top. The sunrise was unforgettable.",
-    lat: 35.3606,
-    lng: 138.7274,
-    locationTag: "Honshu, Japan",
-    createdAt: new Date(Date.now() - 1000 * 60 * 60 * 24 * 5).toISOString(),
-    authorName: "WayPoint",
-    photos: [{ id: "p2", url: "https://images.unsplash.com/photo-1490806843957-31f4c9a91c65?auto=format&fit=crop&w=800&q=80" }]
-  },
-  {
-    id: "sample-3",
-    title: "Central Park Stroll",
-    narrative: "Autumn leaves falling softly around the reservoir.",
-    lat: 40.7812,
-    lng: -73.9665,
-    locationTag: "New York, USA",
-    createdAt: new Date(Date.now() - 1000 * 60 * 60 * 24 * 10).toISOString(),
-    authorName: "WayPoint",
-    photos: [{ id: "p3", url: "https://images.unsplash.com/photo-1510798831971-661eb04b3739?auto=format&fit=crop&w=800&q=80" }]
-  },
-  {
-    id: "sample-4",
-    title: "Santorini Getaway",
-    narrative: "Crystal clear waters and white-washed houses.",
-    lat: 36.3932,
-    lng: 25.4615,
-    locationTag: "Santorini, Greece",
-    createdAt: new Date(Date.now() - 1000 * 60 * 60 * 24 * 15).toISOString(),
-    authorName: "WayPoint",
-    photos: [{ id: "p4", url: "https://images.unsplash.com/photo-1613395877344-13d4a8e0d49e?auto=format&fit=crop&w=800&q=80" }]
-  }
-];
 
 const pinIcon = L.divIcon({
   className: "!bg-transparent !border-0",
@@ -278,18 +232,24 @@ function ClusterMarkerItem({
   const markerRef = useRef<any>(null);
   const wrappedLng = getWrappedLng(cluster.lng, centerLng);
 
+  const map = useMap();
+
   useEffect(() => {
     if (activeSearchPopupId && cluster.memories.some((m) => m.id === activeSearchPopupId)) {
       if (markerRef.current) {
+        // Gracefully pan the map to center the searched waypoint first
+        map.panTo([cluster.lat, wrappedLng], { animate: true, duration: 0.5 });
+        
+        // Open the popup (PopupPanAdjuster will still fine-tune if it overlaps the header)
         markerRef.current.openPopup();
         clearActiveSearchPopup();
       }
     }
-  }, [activeSearchPopupId, cluster, clearActiveSearchPopup]);
+  }, [activeSearchPopupId, cluster, clearActiveSearchPopup, map, wrappedLng]);
 
   return (
     <Marker ref={markerRef} position={[cluster.lat, wrappedLng]} icon={cluster.memories.some(m => m.id.startsWith('draft-')) ? draftPinIcon : pinIcon}>
-      <Popup closeButton={false} autoPan={true} closeOnClick={true} offset={[0, -20]}>
+      <Popup closeButton={false} autoPan={false} closeOnClick={true} offset={[0, -20]}>
         <ClusterPopup cluster={cluster} onOpen={() => onOpenCluster(cluster.key)} onDeleteMemory={onDeleteMemory} />
       </Popup>
     </Marker>
@@ -418,13 +378,25 @@ export function MapCanvas({
     }
   }, [query.data]);
 
-  // Merge server memories with offline draft memories
+  // Merge server memories with offline draft memories and the actively searched memory
+  const activeSearchMemory = useAppStore((s) => s.activeSearchMemory);
+  
   const allMemories = useMemo(() => {
-    if (!user) return SAMPLE_MEMORIES;
+    if (!user) return [];
     const drafts = draftsQuery.data ?? [];
-    // Filter out any drafts that might have already synced (same lat/lng/title)
-    return [...serverMemories, ...drafts];
-  }, [serverMemories, draftsQuery.data, user]);
+    
+    // Create a map to deduplicate by ID
+    const merged = new Map<string, Memory>();
+    serverMemories.forEach(m => merged.set(m.id, m));
+    drafts.forEach(m => merged.set(m.id, m));
+    
+    // Instantly inject the actively searched memory so it renders flawlessly BEFORE the BBox network request completes!
+    if (activeSearchMemory) {
+      merged.set(activeSearchMemory.id, activeSearchMemory);
+    }
+    
+    return Array.from(merged.values());
+  }, [serverMemories, draftsQuery.data, user, activeSearchMemory]);
 
   const clusters = useMemo(() => buildClusters(allMemories), [allMemories]);
 
@@ -465,6 +437,7 @@ export function MapCanvas({
         />
         <BBoxEmitter onBBox={handleBBox} onCenter={onCenter} />
         <LocationPicker />
+        <PopupPanAdjuster />
         <UserLocationZoomer />
         <MapControls />
         <ClusterMarkers
@@ -503,6 +476,58 @@ export function MapCanvas({
       </AlertDialog>
     </>
   );
+}
+
+function PopupPanAdjuster() {
+  const map = useMap();
+
+  useEffect(() => {
+    const handlePopupOpen = (e: any) => {
+      const popupNode = e.popup.getElement();
+      if (!popupNode) return;
+
+      // We completely replace Leaflet's built-in autoPan to make it instantly responsive
+      // to our custom floating UI elements. We wait just 50ms for React to fully render 
+      // the popup's content and dimensions before calculating overlaps.
+      setTimeout(() => {
+        if (!popupNode.isConnected) return;
+        
+        const header = document.querySelector('header');
+        const headerBottom = header ? header.getBoundingClientRect().bottom : 80;
+        
+        const rect = popupNode.getBoundingClientRect();
+        let dx = 0;
+        let dy = 0;
+        
+        // Check Top overlap (Header)
+        if (rect.top < headerBottom + 24) {
+          dy = rect.top - (headerBottom + 24); // Negative (pan down)
+        } 
+        // Check Bottom overlap
+        else if (rect.bottom > window.innerHeight - 24) {
+          dy = rect.bottom - (window.innerHeight - 24); // Positive (pan up)
+        }
+
+        // Check Left overlap
+        if (rect.left < 24) {
+          dx = rect.left - 24; // Negative (pan right)
+        }
+        // Check Right overlap
+        else if (rect.right > window.innerWidth - 24) {
+          dx = rect.right - (window.innerWidth - 24); // Positive (pan left)
+        }
+        
+        if (dx !== 0 || dy !== 0) {
+          map.panBy([dx, dy], { animate: true, duration: 0.25 });
+        }
+      }, 50);
+    };
+
+    map.on('popupopen', handlePopupOpen);
+    return () => { map.off('popupopen', handlePopupOpen); };
+  }, [map]);
+
+  return null;
 }
 
 function MapControls() {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -57,6 +58,13 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 
 	if req.Email == "" || req.Password == "" {
 		http.Error(w, `{"error":"Email and password are required"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Validate email format
+	emailRegex := regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@gmail\.com$`)
+	if !emailRegex.MatchString(req.Email) {
+		http.Error(w, `{"error":"Invalid email format"}`, http.StatusBadRequest)
 		return
 	}
 
@@ -136,6 +144,18 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req.Email = strings.TrimSpace(strings.ToLower(req.Email))
+
+	if req.Email == "" || req.Password == "" {
+		http.Error(w, `{"error":"Email and password are required"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Validate email format
+	emailRegex := regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@gmail\.com$`)
+	if !emailRegex.MatchString(req.Email) {
+		http.Error(w, `{"error":"Invalid email format"}`, http.StatusBadRequest)
+		return
+	}
 
 	// Fetch user from PostgreSQL
 	user, err := h.db.GetUserByEmail(req.Email)
