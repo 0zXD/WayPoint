@@ -21,6 +21,7 @@ type Config struct {
 	GoogleClientID     string
 	GoogleClientSecret string
 	GoogleRedirectURL  string
+	MapTilerAPIKey     string
 }
 
 func LoadConfig() (*Config, error) {
@@ -46,6 +47,7 @@ func LoadConfig() (*Config, error) {
 		GoogleClientID:     getEnv("GOOGLE_CLIENT_ID", ""),
 		GoogleClientSecret: getEnv("GOOGLE_CLIENT_SECRET", ""),
 		GoogleRedirectURL:  getEnv("GOOGLE_REDIRECT_URL", "http://localhost:8000/api/v1/auth/google/callback"),
+		MapTilerAPIKey:     getEnv("MAPTILER_API_KEY", ""),
 	}
 
 	return cfg, nil

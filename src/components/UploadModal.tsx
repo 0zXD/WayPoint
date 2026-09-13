@@ -69,19 +69,18 @@ export function UploadModal({ mapCenter }: { mapCenter: { lat: number; lng: numb
     if (isNaN(parsedLat) || isNaN(parsedLng)) return;
     setIsGeocodingTag(true);
     try {
+      // Use MapTiler reverse geocoding (expects lng,lat format)
       const res = await fetch(
-        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${parsedLat}&lon=${parsedLng}&zoom=10&addressdetails=1`,
-        { headers: { "Accept-Language": "en" } }
+        `/api/v1/map/proxy/geocoding/${parsedLng},${parsedLat}.json?limit=1&language=en`
       );
       if (!res.ok) return;
       const data = await res.json();
-      const addr = data.address || {};
-      // Build a concise label: city/town/village, country
-      const locality =
-        addr.city || addr.town || addr.village || addr.county || addr.state_district || addr.state || "";
-      const country = addr.country || "";
-      const tag = [locality, country].filter(Boolean).join(", ");
-      if (tag) setLocationTag(tag);
+      
+      if (data.features && data.features.length > 0) {
+        // MapTiler conveniently provides a well-formatted string!
+        const tag = data.features[0].place_name;
+        if (tag) setLocationTag(tag);
+      }
     } catch {
       // Silently fail — user can still see coordinates
     } finally {

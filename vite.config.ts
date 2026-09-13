@@ -17,4 +17,20 @@ export default defineConfig({
       "@": "/src",
     },
   },
+  // MapLibre's web worker dynamically imports maplibre-gl-shared.mjs at runtime.
+  // Vite emits it as a separate chunk but the worker can't resolve it (404).
+  // Setting inlineDynamicImports: true bundles everything into a single worker file.
+  worker: {
+    format: "es",
+    rollupOptions: {
+      output: {
+        inlineDynamicImports: true,
+      },
+    },
+  },
+  server: {
+    proxy: {
+      "/api": "http://localhost:8000",
+    }
+  }
 });

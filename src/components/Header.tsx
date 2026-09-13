@@ -2,7 +2,9 @@ import { useState, useDeferredValue, useEffect, useRef } from "react";
 import { Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { searchMemories } from "@/lib/memories";
-import { Compass, Loader2, LogIn, LogOut, Search, Sparkles, X } from "lucide-react";
+import { getSavedRegions } from "@/lib/offline";
+import { useMap } from "react-map-gl/maplibre";
+import { Compass, Loader2, LogIn, LogOut, Search, Sparkles, X, CloudDownload, MapPin } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -46,12 +48,18 @@ export function Header({
 
   const [searchQuery, setSearchQuery] = useState("");
   const deferredQuery = useDeferredValue(searchQuery);
+  const { current: map, "main-map": mainMap } = useMap();
+  const activeMap = map || mainMap;
 
   const { data: searchResults, isFetching } = useQuery({
     queryKey: ["search", deferredQuery],
     queryFn: () => searchMemories(deferredQuery),
     enabled: deferredQuery.length > 0,
   });
+
+  const matchingRegions = searchQuery.trim().length >= 2
+    ? getSavedRegions().filter((r) => r.name.toLowerCase().includes(searchQuery.toLowerCase()))
+    : [];
 
   const [selectedIndex, setSelectedIndex] = useState(-1);
   useEffect(() => {
@@ -216,9 +224,45 @@ export function Header({
                   <div className="p-3 text-center text-xs text-muted-foreground flex items-center justify-center gap-2">
                     <Loader2 className="h-3 w-3 animate-spin" /> Searching...
                   </div>
-                ) : searchResults && searchResults.length > 0 ? (
+                ) : (searchResults && searchResults.length > 0) || matchingRegions.length > 0 ? (
                   <div className="max-h-[50vh] overflow-y-auto py-1">
-                    {searchResults.map((result, idx) => (
+                    {matchingRegions.length > 0 && (
+                      <div className="border-b border-border/40 pb-1 mb-1">
+                        <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                          Downloaded Cities (Offline)
+                        </div>
+                        {matchingRegions.map((region) => (
+                          <button
+                            key={region.id}
+                            type="button"
+                            className="w-full text-left px-3 py-1.5 transition-colors flex items-center justify-between gap-3 hover:bg-muted/50 cursor-pointer"
+                            onClick={() => {
+                              activeMap?.fitBounds([
+                                [region.bbox.minLng, region.bbox.minLat],
+                                [region.bbox.maxLng, region.bbox.maxLat]
+                              ], { duration: 1500, padding: 40 });
+                              setSearchQuery("");
+                            }}
+                          >
+                            <div className="flex items-center gap-2 overflow-hidden">
+                              <CloudDownload className="h-3.5 w-3.5 text-primary shrink-0" />
+                              <div className="flex flex-col overflow-hidden">
+                                <span className="text-[13px] font-semibold text-foreground truncate">
+                                  {region.name.split(",")[0]}
+                                </span>
+                                <span className="text-[10px] text-muted-foreground truncate">
+                                  {region.name} • {region.mb} MB
+                                </span>
+                              </div>
+                            </div>
+                            <span className="text-[9px] font-semibold uppercase tracking-wider bg-primary/10 text-primary px-1.5 py-0.5 rounded-full shrink-0">
+                              Offline
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {searchResults && searchResults.map((result, idx) => (
                       <button
                         key={result.id}
                         className={cn(

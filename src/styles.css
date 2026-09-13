@@ -197,6 +197,73 @@
   50% { opacity: 0.6; }
 }
 
+/* Current User Location Beacon */
+.current-location-marker {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  cursor: pointer;
+  z-index: 50;
+}
+
+.current-location-pulse {
+  position: absolute;
+  inset: -10px;
+  border-radius: 50%;
+  background: oklch(0.6 0.22 250 / 0.35);
+  animation: location-radar 2.4s cubic-bezier(0.2, 0.6, 0.35, 1) infinite;
+  pointer-events: none;
+}
+
+.current-location-halo {
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  background: oklch(0.6 0.22 250 / 0.25);
+  filter: blur(1px);
+}
+
+.current-location-core {
+  position: relative;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: oklch(0.55 0.25 255);
+  border: 2.5px solid #ffffff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35), 0 0 12px oklch(0.55 0.25 255 / 0.5);
+  transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.current-location-marker:hover .current-location-core {
+  transform: scale(1.2);
+}
+
+.current-location-dot {
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: #ffffff;
+  opacity: 0.95;
+}
+
+@keyframes location-radar {
+  0% {
+    transform: scale(0.4);
+    opacity: 0.9;
+  }
+  70% {
+    transform: scale(1.9);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1.9);
+    opacity: 0;
+  }
+}
+
 /* Sleek themed popup */
 .leaflet-popup-content-wrapper {
   background: var(--glass-bg) !important;

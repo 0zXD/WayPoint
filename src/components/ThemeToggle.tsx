@@ -3,11 +3,22 @@ import { Moon, Sun } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 export function ThemeToggle() {
-  const [dark, setDark] = useState(false);
+  const [dark, setDark] = useState(() => {
+    if (typeof document === "undefined") return true;
+    const stored = localStorage.getItem("atlas-theme");
+    if (stored === "dark") return true;
+    if (stored === "light") return false;
+    return document.documentElement.classList.contains("dark") || window.matchMedia("(prefers-color-scheme: dark)").matches;
+  });
 
   useEffect(() => {
-    // Sync initially with the class set by our head script to prevent hydration mismatch flash
-    setDark(document.documentElement.classList.contains("dark"));
+    // Sync initially with localStorage and html class to prevent hydration mismatch flash
+    const stored = localStorage.getItem("atlas-theme");
+    const isDark = stored === "dark" || (stored !== "light" && (
+      document.documentElement.classList.contains("dark") || window.matchMedia("(prefers-color-scheme: dark)").matches
+    ));
+    setDark(isDark);
+    document.documentElement.classList.toggle("dark", isDark);
 
     // Listen for OS/browser preference changes
     const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
