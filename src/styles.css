@@ -68,6 +68,10 @@
   --glass-border: oklch(0.5 0.05 265 / 0.15);
   --shadow-elevated: 0 20px 60px -20px oklch(0.3 0.15 265 / 0.35);
   --gradient-accent: linear-gradient(135deg, var(--primary), var(--primary-glow));
+  
+  --toast-bg: oklch(1 0 0 / 0.55);
+  --toast-border: oklch(0 0 0 / 0.08);
+  --toast-shadow: 0 20px 40px -10px oklch(0.3 0.15 265 / 0.15);
 }
 
 .dark {
@@ -97,11 +101,17 @@
   --glass-bg: oklch(0.18 0.025 262 / 0.65);
   --glass-border: oklch(1 0 0 / 0.1);
   --shadow-elevated: 0 20px 60px -20px oklch(0 0 0 / 0.55);
+  
+  --toast-bg: oklch(0.1 0.01 260 / 0.35);
+  --toast-border: oklch(1 0 0 / 0.08);
+  --toast-shadow: 0 20px 40px -10px oklch(0 0 0 / 0.6);
 }
 
 @layer base {
   * {
     border-color: var(--color-border);
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-border) transparent;
   }
   body {
     background-color: var(--color-background);
@@ -111,6 +121,22 @@
   h1, h2, h3, h4 {
     font-family: var(--font-display);
     letter-spacing: -0.02em;
+  }
+  
+  /* Webkit custom scrollbars */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-border);
+    border-radius: 10px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-muted-foreground);
   }
 }
 
@@ -160,6 +186,15 @@
   inset: 6px;
   background: var(--color-background);
   border-radius: 50%;
+}
+.memory-pin.draft-pin {
+  background: oklch(0.75 0.18 85);
+  box-shadow: 0 6px 18px -6px oklch(0.75 0.18 85 / 0.6);
+  animation: draft-pulse 2s ease-in-out infinite;
+}
+@keyframes draft-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
 }
 
 /* Sleek themed popup */
@@ -220,4 +255,14 @@
 }
 .leaflet-tooltip-right:before {
   border-right-color: var(--glass-border) !important;
+}
+
+/* Force Sonner toasts to bottom-left on mobile and tablets, bypassing its forced full-width layout */
+@media (max-width: 1024px) {
+  [data-sonner-toaster] {
+    width: min(340px, calc(100vw - 32px)) !important;
+    left: 16px !important;
+    right: auto !important;
+    bottom: 85px !important; /* Gracefully above bottom-left UI like live stream/drafts */
+  }
 }

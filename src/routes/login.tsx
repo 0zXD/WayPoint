@@ -1,13 +1,13 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { Compass, Loader2 } from "lucide-react";
-import { toast } from "sonner";
+import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { login, signup, loginWithGoogle } from "@/lib/auth";
 import { useAppStore } from "@/lib/store";
-import { API_CONFIGURED } from "@/lib/api";
+
 
 export const Route = createFileRoute("/login")({
   ssr: false,
@@ -114,9 +114,7 @@ function LoginPage() {
         <p className="mt-1 text-sm text-muted-foreground">
           {isSignUp
             ? "Sign up to save & explore spatial memories."
-            : API_CONFIGURED
-            ? "Enter your WayPoint credentials."
-            : "Enter your credentials or test demo mode."}
+            : "Enter your WayPoint credentials."}
         </p>
 
         {/* Google OAuth Button */}

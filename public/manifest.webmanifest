@@ -1,0 +1,20 @@
+{
+  "name": "WayPoint — Geospatial Journaling",
+  "short_name": "WayPoint",
+  "description": "Pin memories to the map. A calm, live atlas for the places you've been.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0a0a",
+  "theme_color": "#6366f1",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "any",
+      "type": "image/x-icon",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["travel", "lifestyle", "maps"],
+  "lang": "en"
+}

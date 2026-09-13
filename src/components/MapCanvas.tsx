@@ -1,19 +1,38 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MapContainer, TileLayer, Marker, Popup, Tooltip, useMap, useMapEvents } from "react-leaflet";
 import L from "leaflet";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { formatDistanceToNow } from "date-fns";
-import { Compass, Images, MapPin, Minus, Navigation, Plus } from "lucide-react";
-import { toast } from "sonner";
-import { listMemories } from "@/lib/memories";
+import { Compass, Images, MapPin, Minus, Navigation, Plus, Trash2, Loader2, Pencil, CloudOff } from "lucide-react";
+import { toast } from "@/hooks/use-toast";
+import { deleteMemory, listMemories } from "@/lib/memories";
+import { listDrafts, draftToMemory, revokeDraftBlobUrls } from "@/lib/drafts";
 import { useAppStore } from "@/lib/store";
-import { CollectionBadge } from "./CollectionBadge";
 import { UploadFab } from "./UploadFab";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
 import type { AuthUser, BBox, Memory } from "@/lib/types";
+
 
 const pinIcon = L.divIcon({
   className: "!bg-transparent !border-0",
   html: `<div class="memory-pin"></div>`,
+  iconSize: [28, 28],
+  iconAnchor: [14, 26],
+});
+
+const draftPinIcon = L.divIcon({
+  className: "!bg-transparent !border-0",
+  html: `<div class="memory-pin draft-pin"></div>`,
   iconSize: [28, 28],
   iconAnchor: [14, 26],
 });
@@ -158,9 +177,11 @@ function UserLocationZoomer() {
 function ClusterMarkers({
   clusters,
   onOpenCluster,
+  onDeleteMemory,
 }: {
   clusters: MemoryCluster[];
   onOpenCluster: (key: string) => void;
+  onDeleteMemory: (m: Memory) => void;
 }) {
   const map = useMap();
   const [centerLng, setCenterLng] = useState<number>(map.getCenter().lng);
@@ -173,24 +194,65 @@ function ClusterMarkers({
     setCenterLng(map.getCenter().lng);
   }, [map]);
 
+  const activeSearchPopupId = useAppStore((s) => s.activeSearchPopupId);
+  const setActiveSearchPopupId = useAppStore((s) => s.setActiveSearchPopupId);
+
   return (
     <>
-      {clusters.map((c) => {
-        const wrappedLng = getWrappedLng(c.lng, centerLng);
-        return (
-          <Marker key={c.key} position={[c.lat, wrappedLng]} icon={pinIcon}>
-            <Popup
-              closeButton
-              autoPan={false}
-              closeOnClick={true}
-              offset={[0, -20]}
-            >
-              <ClusterPopup cluster={c} onOpen={() => onOpenCluster(c.key)} />
-            </Popup>
-          </Marker>
-        );
-      })}
+      {clusters.map((c) => (
+        <ClusterMarkerItem
+          key={c.key}
+          cluster={c}
+          centerLng={centerLng}
+          onOpenCluster={onOpenCluster}
+          onDeleteMemory={onDeleteMemory}
+          activeSearchPopupId={activeSearchPopupId}
+          clearActiveSearchPopup={() => setActiveSearchPopupId(null)}
+        />
+      ))}
     </>
+  );
+}
+
+function ClusterMarkerItem({
+  cluster,
+  centerLng,
+  onOpenCluster,
+  onDeleteMemory,
+  activeSearchPopupId,
+  clearActiveSearchPopup,
+}: {
+  cluster: MemoryCluster;
+  centerLng: number;
+  onOpenCluster: (key: string) => void;
+  onDeleteMemory: (m: Memory) => void;
+  activeSearchPopupId: string | null;
+  clearActiveSearchPopup: () => void;
+}) {
+  const markerRef = useRef<any>(null);
+  const wrappedLng = getWrappedLng(cluster.lng, centerLng);
+
+  const map = useMap();
+
+  useEffect(() => {
+    if (activeSearchPopupId && cluster.memories.some((m) => m.id === activeSearchPopupId)) {
+      if (markerRef.current) {
+        // Gracefully pan the map to center the searched waypoint first
+        map.panTo([cluster.lat, wrappedLng], { animate: true, duration: 0.5 });
+        
+        // Open the popup (PopupPanAdjuster will still fine-tune if it overlaps the header)
+        markerRef.current.openPopup();
+        clearActiveSearchPopup();
+      }
+    }
+  }, [activeSearchPopupId, cluster, clearActiveSearchPopup, map, wrappedLng]);
+
+  return (
+    <Marker ref={markerRef} position={[cluster.lat, wrappedLng]} icon={cluster.memories.some(m => m.id.startsWith('draft-')) ? draftPinIcon : pinIcon}>
+      <Popup closeButton={false} autoPan={false} closeOnClick={true} offset={[0, -20]}>
+        <ClusterPopup cluster={cluster} onOpen={() => onOpenCluster(cluster.key)} onDeleteMemory={onDeleteMemory} />
+      </Popup>
+    </Marker>
   );
 }
 
@@ -257,32 +319,84 @@ export function MapCanvas({
   const debounceRef = useRef<number | null>(null);
   const dark = useDark();
 
+  const qc = useQueryClient();
+  const [memoryToDelete, setMemoryToDelete] = useState<Memory | null>(null);
+
+  const deleteMemoryMutation = useMutation({
+    mutationFn: () => deleteMemory(memoryToDelete!.id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["memories"] });
+      setMemoryToDelete(null);
+    },
+    onError: () => toast.error("Failed to delete memory"),
+  });
+
   const key = useMemo(() => (bbox ? round(bbox) : null), [bbox]);
+  const user = useAppStore((s) => s.user);
 
   const query = useQuery({
     queryKey: ["memories", key],
     queryFn: () => listMemories(bbox!),
-    enabled: !!bbox,
+    enabled: !!bbox && !!user,
     staleTime: 30_000,
   });
 
-  const [allMemories, setAllMemories] = useState<Memory[]>([]);
+  // Load offline drafts from IndexedDB
+  const userName = user?.name;
+  const draftsQuery = useQuery({
+    queryKey: ["drafts"],
+    networkMode: "always", // CRITICAL: Run even when offline so we can read from IndexedDB
+    queryFn: async () => {
+      const drafts = await listDrafts();
+      return drafts.map((d) => draftToMemory(d, userName ?? undefined));
+    },
+    enabled: !!user,
+    staleTime: 5_000,
+  });
+
+  // Revoke blob URLs when draft memories change
+  const prevDraftMemories = useRef<Memory[]>([]);
+  useEffect(() => {
+    return () => {
+      revokeDraftBlobUrls(prevDraftMemories.current);
+    };
+  }, []);
+  useEffect(() => {
+    if (draftsQuery.data) {
+      revokeDraftBlobUrls(prevDraftMemories.current);
+      prevDraftMemories.current = draftsQuery.data;
+    }
+  }, [draftsQuery.data]);
+
+  // To prevent flickering while panning, we can retain the previous data
+  // until the new fetch completes.
+  const [serverMemories, setServerMemories] = useState<Memory[]>([]);
 
   useEffect(() => {
-    if (!query.data) return;
-    setAllMemories((prev) => {
-      const map = new Map<string, Memory>();
-      for (const m of prev) map.set(m.id, m);
-      let changed = false;
-      for (const m of query.data) {
-        if (!map.has(m.id)) {
-          map.set(m.id, m);
-          changed = true;
-        }
-      }
-      return changed ? [...map.values()] : prev;
-    });
+    if (query.data) {
+      setServerMemories(query.data);
+    }
   }, [query.data]);
+
+  // Merge server memories with offline draft memories and the actively searched memory
+  const activeSearchMemory = useAppStore((s) => s.activeSearchMemory);
+  
+  const allMemories = useMemo(() => {
+    if (!user) return [];
+    const drafts = draftsQuery.data ?? [];
+    
+    // Create a map to deduplicate by ID
+    const merged = new Map<string, Memory>();
+    serverMemories.forEach(m => merged.set(m.id, m));
+    drafts.forEach(m => merged.set(m.id, m));
+    
+    // Instantly inject the actively searched memory so it renders flawlessly BEFORE the BBox network request completes!
+    if (activeSearchMemory) {
+      merged.set(activeSearchMemory.id, activeSearchMemory);
+    }
+    
+    return Array.from(merged.values());
+  }, [serverMemories, draftsQuery.data, user, activeSearchMemory]);
 
   const clusters = useMemo(() => buildClusters(allMemories), [allMemories]);
 
@@ -305,27 +419,115 @@ export function MapCanvas({
     : "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png";
 
   return (
-    <MapContainer
-      center={[30, 5]}
-      zoom={3}
-      minZoom={3}
-      maxBounds={MAX_BOUNDS}
-      maxBoundsViscosity={1.0}
-      worldCopyJump
-      className="fixed inset-0 h-screen w-screen"
-      zoomControl={false}
-    >
-      <TileLayer
-        url={tileUrl}
-        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> · <a href="https://carto.com/attributions">CARTO</a>'
-        bounds={[[-85.05112878, -180], [85.05112878, 180]]}
-      />
-      <BBoxEmitter onBBox={handleBBox} onCenter={onCenter} />
-      <UserLocationZoomer />
-      <MapControls />
-      <ClusterMarkers clusters={clusters} onOpenCluster={setOpenClusterKey} />
-    </MapContainer>
+    <>
+      <MapContainer
+        center={[30, 5]}
+        zoom={3}
+        minZoom={3}
+        maxBounds={MAX_BOUNDS}
+        maxBoundsViscosity={1.0}
+        worldCopyJump
+        className="fixed inset-0 h-screen w-screen"
+        zoomControl={false}
+      >
+        <TileLayer
+          url={tileUrl}
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> · <a href="https://carto.com/attributions">CARTO</a>'
+          bounds={[[-85.05112878, -180], [85.05112878, 180]]}
+        />
+        <BBoxEmitter onBBox={handleBBox} onCenter={onCenter} />
+        <LocationPicker />
+        <PopupPanAdjuster />
+        <UserLocationZoomer />
+        <MapControls />
+        <ClusterMarkers
+          clusters={clusters}
+          onOpenCluster={(key) => {
+            if (!user) {
+              toast("Please sign in or create an account to view full memory details and photos.");
+              return;
+            }
+            setOpenClusterKey(key);
+          }}
+          onDeleteMemory={(m) => setMemoryToDelete(m)}
+        />
+      </MapContainer>
+
+      <AlertDialog open={!!memoryToDelete} onOpenChange={(open) => !open && setMemoryToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This action cannot be undone. This will permanently delete your memory "{memoryToDelete?.title}" and remove all of its associated photos.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <Button
+              variant="destructive"
+              disabled={deleteMemoryMutation.isPending}
+              onClick={() => deleteMemoryMutation.mutate()}
+            >
+              {deleteMemoryMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Delete Memory
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
+}
+
+function PopupPanAdjuster() {
+  const map = useMap();
+
+  useEffect(() => {
+    const handlePopupOpen = (e: any) => {
+      const popupNode = e.popup.getElement();
+      if (!popupNode) return;
+
+      // We completely replace Leaflet's built-in autoPan to make it instantly responsive
+      // to our custom floating UI elements. We wait just 50ms for React to fully render 
+      // the popup's content and dimensions before calculating overlaps.
+      setTimeout(() => {
+        if (!popupNode.isConnected) return;
+        
+        const header = document.querySelector('header');
+        const headerBottom = header ? header.getBoundingClientRect().bottom : 80;
+        
+        const rect = popupNode.getBoundingClientRect();
+        let dx = 0;
+        let dy = 0;
+        
+        // Check Top overlap (Header)
+        if (rect.top < headerBottom + 24) {
+          dy = rect.top - (headerBottom + 24); // Negative (pan down)
+        } 
+        // Check Bottom overlap
+        else if (rect.bottom > window.innerHeight - 24) {
+          dy = rect.bottom - (window.innerHeight - 24); // Positive (pan up)
+        }
+
+        // Check Left overlap
+        if (rect.left < 24) {
+          dx = rect.left - 24; // Negative (pan right)
+        }
+        // Check Right overlap
+        else if (rect.right > window.innerWidth - 24) {
+          dx = rect.right - (window.innerWidth - 24); // Positive (pan left)
+        }
+        
+        if (dx !== 0 || dy !== 0) {
+          map.panBy([dx, dy], { animate: true, duration: 0.25 });
+        }
+      }, 50);
+    };
+
+    map.on('popupopen', handlePopupOpen);
+    return () => { map.off('popupopen', handlePopupOpen); };
+  }, [map]);
+
+  return null;
 }
 
 function MapControls() {
@@ -345,7 +547,12 @@ function MapControls() {
             easeLinearity: 0.25,
           });
         },
-        () => toast.error("Could not access your location.")
+        () => toast.error("Could not access your location."),
+        {
+          enableHighAccuracy: true,
+          timeout: 10000,
+          maximumAge: 0,
+        }
       );
     }
   };
@@ -402,13 +609,19 @@ function MapControls() {
 function ClusterPopup({
   cluster,
   onOpen,
+  onDeleteMemory,
 }: {
   cluster: MemoryCluster;
   onOpen: () => void;
+  onDeleteMemory: (m: Memory) => void;
 }) {
   const sample = cluster.memories[0];
   const count = cluster.memories.length;
   const multiple = count > 1;
+  const isDraft = sample.id.startsWith('draft-');
+  const user = useAppStore((s) => s.user);
+  const setEditingMemory = useAppStore((s) => s.setEditingMemory);
+  const isOwner = user?.name === sample.authorName;
 
   return (
     <button
@@ -416,31 +629,48 @@ function ClusterPopup({
       onClick={onOpen}
       className="group block w-[215px] sm:w-[260px] text-left text-foreground transition-transform active:scale-[0.99]"
     >
-      {sample.imageUrl && (
+      {sample.photos && sample.photos.length > 0 && (
         <div className="relative aspect-[16/9.5] sm:aspect-[16/10] w-full overflow-hidden rounded-t-xl sm:rounded-t-2xl">
           <img
-            src={sample.imageUrl}
+            src={sample.photos[0].url}
             alt={sample.title}
             className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.03]"
           />
           <div className="absolute inset-x-0 bottom-0 h-10 sm:h-14 bg-gradient-to-t from-background/80 to-transparent" />
-          {(sample.visibility || sample.collection) && (
-            <div className="absolute bottom-1.5 left-1.5 sm:bottom-2 sm:left-2">
-              <CollectionBadge visibility={sample.visibility} collection={sample.collection} />
-            </div>
+
+          {isOwner && !isDraft && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onDeleteMemory(sample);
+              }}
+              className="absolute top-1.5 right-1.5 sm:top-2 sm:right-2 flex h-6 w-6 sm:h-7 sm:w-7 items-center justify-center rounded-full bg-black/40 hover:bg-destructive/80 backdrop-blur-md text-white border border-white/10 transition-colors z-10"
+              title="Delete memory"
+            >
+              <Trash2 className="h-3 w-3 sm:h-3.5 sm:w-3.5" />
+            </button>
           )}
+
           {multiple && (
-            <div className="glass absolute right-1.5 top-1.5 sm:right-2 sm:top-2 flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[9px] sm:text-[10px] font-medium text-foreground shadow-sm">
+            <div className="glass absolute left-1.5 top-1.5 sm:left-2 sm:top-2 flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[9px] sm:text-[10px] font-medium text-foreground shadow-sm">
               <Images className="h-2.5 w-2.5 sm:h-3 sm:w-3 text-primary" />
-              {count} photos
+              {count} memories
             </div>
           )}
         </div>
       )}
       <div className="space-y-1 px-2.5 py-2.5 sm:space-y-1.5 sm:px-3.5 sm:py-3">
-        <h3 className="font-display text-xs sm:text-[15px] font-semibold leading-tight tracking-tight">
-          {sample.title}
-        </h3>
+        <div className="flex items-start justify-between gap-2">
+          <h3 className="font-display text-xs sm:text-[15px] font-semibold leading-tight tracking-tight">
+            {sample.title}
+          </h3>
+          {isDraft && (
+            <span className="text-[9px] sm:text-[10px] uppercase tracking-wider font-semibold text-muted-foreground shrink-0 pt-0.5 sm:pt-1">
+              Offline
+            </span>
+          )}
+        </div>
         {sample.locationTag && (
           <div className="flex items-center gap-1 text-[10px] sm:text-[11px] text-muted-foreground">
             <MapPin className="h-2.5 w-2.5 sm:h-3 sm:w-3 text-primary shrink-0" />
@@ -452,10 +682,98 @@ function ClusterPopup({
         <p className="line-clamp-2 text-[11px] sm:text-xs leading-relaxed text-foreground/80 pt-0.5">
           {sample.narrative}
         </p>
-        <div className="pt-1 text-[10px] sm:text-[11px] font-medium text-primary opacity-80 transition-opacity group-hover:opacity-100">
-          {multiple ? `View all ${count} photos →` : "Open details →"}
+        <div className="pt-1 text-[10px] sm:text-[11px] font-medium text-primary opacity-80 transition-opacity group-hover:opacity-100 flex items-center justify-between w-full">
+          {isDraft ? (
+            <span className="text-amber-500">Waiting to sync...</span>
+          ) : (
+            <>
+              <span>{multiple ? `View all ${count} photos →` : "Open details →"}</span>
+              {isOwner && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setEditingMemory(sample);
+                  }}
+                  className="flex items-center gap-1 hover:text-foreground transition-colors px-2 py-0.5 rounded-full hover:bg-primary/10"
+                  title="Edit memory"
+                >
+                  <Pencil className="h-3 w-3" /> Edit
+                </button>
+              )}
+            </>
+          )}
         </div>
       </div>
     </button>
   );
+}
+
+function LocationPicker() {
+  const isPickingLocation = useAppStore((s) => s.isPickingLocation);
+  const setIsPickingLocation = useAppStore((s) => s.setIsPickingLocation);
+  const setPickedLocation = useAppStore((s) => s.setPickedLocation);
+  const setUploadOpen = useAppStore((s) => s.setUploadOpen);
+  const map = useMap();
+
+  const cancelPicking = useCallback(() => {
+    setIsPickingLocation(false);
+  }, [setIsPickingLocation]);
+
+  // Show crosshair cursor while picking
+  useEffect(() => {
+    if (!isPickingLocation) return;
+    map.getContainer().style.cursor = "crosshair";
+    return () => {
+      map.getContainer().style.cursor = "";
+    };
+  }, [isPickingLocation, map]);
+
+  // Escape key exits pick mode (desktop/laptop)
+  useEffect(() => {
+    if (!isPickingLocation) return;
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        cancelPicking();
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isPickingLocation, cancelPicking]);
+
+  // Browser back button exits pick mode (mobile)
+  useEffect(() => {
+    if (!isPickingLocation) return;
+
+    // Push a dummy history entry so pressing back pops it instead of navigating away
+    history.pushState({ pickingLocation: true }, "");
+
+    const onPopState = () => {
+      cancelPicking();
+    };
+
+    window.addEventListener("popstate", onPopState);
+    return () => {
+      window.removeEventListener("popstate", onPopState);
+      // Clean up the dummy entry if we exit pick mode by other means
+      if (history.state?.pickingLocation) {
+        history.back();
+      }
+    };
+  }, [isPickingLocation, cancelPicking]);
+
+  useMapEvents({
+    click(e) {
+      if (isPickingLocation) {
+        setPickedLocation({ lat: e.latlng.lat, lng: e.latlng.lng });
+        setIsPickingLocation(false);
+        setUploadOpen(true);
+      }
+    },
+  });
+
+  return null;
 }

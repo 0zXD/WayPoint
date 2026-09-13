@@ -1,7 +1,9 @@
-import { useState } from "react";
+import { useState, useDeferredValue, useEffect, useRef } from "react";
 import { Link } from "@tanstack/react-router";
-import { Compass, Loader2, LogIn, LogOut, Search, Sparkles } from "lucide-react";
-import { toast } from "sonner";
+import { useQuery } from "@tanstack/react-query";
+import { searchMemories } from "@/lib/memories";
+import { Compass, Loader2, LogIn, LogOut, Search, Sparkles, X } from "lucide-react";
+import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -22,7 +24,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { ThemeToggle } from "./ThemeToggle";
 import { useAppStore } from "@/lib/store";
 import { login, signup, loginWithGoogle, logout } from "@/lib/auth";
-import { API_CONFIGURED } from "@/lib/api";
+
 import type { WSStatus } from "@/lib/ws";
 import { cn } from "@/lib/utils";
 
@@ -35,8 +37,37 @@ export function Header({
 }) {
   const user = useAppStore((s) => s.user);
   const openClusterKey = useAppStore((s) => s.openClusterKey);
+  const setActiveSearchPopupId = useAppStore((s) => s.setActiveSearchPopupId);
+  const setActiveSearchMemory = useAppStore((s) => s.setActiveSearchMemory);
+  const isPickingLocation = useAppStore((s) => s.isPickingLocation);
+  const setIsPickingLocation = useAppStore((s) => s.setIsPickingLocation);
   const isDrawerOpen = !!openClusterKey;
   const initials = user?.name?.slice(0, 2).toUpperCase() ?? "?";
+
+  const [searchQuery, setSearchQuery] = useState("");
+  const deferredQuery = useDeferredValue(searchQuery);
+
+  const { data: searchResults, isFetching } = useQuery({
+    queryKey: ["search", deferredQuery],
+    queryFn: () => searchMemories(deferredQuery),
+    enabled: deferredQuery.length > 0,
+  });
+
+  const [selectedIndex, setSelectedIndex] = useState(-1);
+  useEffect(() => {
+    setSelectedIndex(-1);
+  }, [searchResults]);
+
+  const searchContainerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (searchContainerRef.current && !searchContainerRef.current.contains(event.target as Node)) {
+        setSearchQuery("");
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   const [popoverOpen, setPopoverOpen] = useState(false);
   const [isSignUp, setIsSignUp] = useState(false);
@@ -50,7 +81,6 @@ export function Header({
     connecting: { color: "bg-yellow-500 animate-pulse", label: "Connecting" },
     open: { color: "bg-success animate-pulse", label: "Live Pipeline" },
     closed: { color: "bg-destructive", label: "Offline" },
-    demo: { color: "bg-primary animate-pulse", label: "Demo" },
   };
   const status = statusMap[wsStatus];
 
@@ -77,18 +107,7 @@ export function Header({
     }
   };
 
-  const handleQuickDemo = async () => {
-    setLoading(true);
-    try {
-      const res = await login("explorer@waypoint.app", "demo123");
-      toast.success(`Welcome back, ${res.user.name}!`);
-      setPopoverOpen(false);
-    } catch (err) {
-      toast.error("Demo login failed");
-    } finally {
-      setLoading(false);
-    }
-  };
+
 
   return (
     <header
@@ -119,26 +138,141 @@ export function Header({
           </span>
         </Link>
 
-        <div className="relative flex-1">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground sm:left-3 sm:h-4 sm:w-4" />
-          <Input
-            placeholder="Search places, memories…"
-            className="h-8 rounded-xl border-transparent bg-background/50 pl-8 text-xs sm:h-9 sm:pl-9 sm:text-sm focus-visible:border-primary/40"
-            onChange={(e) => onSearch(e.target.value)}
-          />
+        <div className="relative flex-1 h-8 sm:h-9">
+          {/* Pick Location Banner */}
+          <div
+            className={cn(
+              "absolute inset-0 flex items-center justify-between bg-muted/40 rounded-xl px-2 sm:px-3 transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] origin-left",
+              isPickingLocation ? "opacity-100 scale-100 translate-y-0 pointer-events-auto" : "opacity-0 scale-[0.98] translate-y-1 pointer-events-none"
+            )}
+          >
+            <div className="flex items-center justify-center flex-1 gap-2 sm:gap-2.5 overflow-hidden px-1">
+              <span className="relative flex h-2 w-2 items-center justify-center shrink-0">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary/40 opacity-75"></span>
+                <span className="relative inline-flex h-1 w-1 rounded-full bg-primary"></span>
+              </span>
+              <span className="text-[11px] sm:text-[13px] font-medium text-foreground/70 truncate font-display tracking-wide">
+                Click anywhere on the map
+              </span>
+            </div>
+            <button
+              onClick={() => setIsPickingLocation(false)}
+              className="flex h-6 w-6 sm:h-7 sm:w-7 items-center justify-center rounded-full hover:bg-background/80 text-muted-foreground hover:text-foreground transition-all cursor-pointer shrink-0 ml-1 sm:ml-2"
+              title="Cancel"
+            >
+              <X className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+            </button>
+          </div>
+
+          {/* Search Bar */}
+          <div
+            className={cn(
+              "absolute inset-0 transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] origin-left",
+              !isPickingLocation ? "opacity-100 scale-100 translate-y-0 pointer-events-auto" : "opacity-0 scale-[0.98] -translate-y-1 pointer-events-none"
+            )}
+            ref={searchContainerRef}
+          >
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground sm:left-3 sm:h-4 sm:w-4" />
+            <Input
+              placeholder="Search places, memories…"
+              className="h-8 rounded-xl border-transparent bg-background/50 pl-8 text-xs sm:h-9 sm:pl-9 sm:text-sm focus-visible:border-primary/40"
+              value={searchQuery}
+              onChange={(e) => {
+                setSearchQuery(e.target.value);
+                onSearch(e.target.value);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  setSearchQuery("");
+                  e.currentTarget.blur();
+                  return;
+                }
+                if (!searchResults || searchResults.length === 0) return;
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setSelectedIndex((prev) => Math.min(prev + 1, searchResults.length - 1));
+                } else if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setSelectedIndex((prev) => Math.max(prev - 1, 0));
+                } else if (e.key === "Enter") {
+                  e.preventDefault();
+                  if (selectedIndex >= 0 && selectedIndex < searchResults.length) {
+                    setActiveSearchPopupId(searchResults[selectedIndex].id);
+                    setActiveSearchMemory(searchResults[selectedIndex]);
+                    setSearchQuery("");
+                    setSelectedIndex(-1);
+                  } else if (searchResults.length > 0) {
+                    setActiveSearchPopupId(searchResults[0].id);
+                    setActiveSearchMemory(searchResults[0]);
+                    setSearchQuery("");
+                    setSelectedIndex(-1);
+                  }
+                }
+              }}
+            />
+            {searchQuery.length > 0 && (
+              <div className="absolute top-full mt-2 w-full bg-card border border-border shadow-lg rounded-xl overflow-hidden z-50">
+                {isFetching ? (
+                  <div className="p-3 text-center text-xs text-muted-foreground flex items-center justify-center gap-2">
+                    <Loader2 className="h-3 w-3 animate-spin" /> Searching...
+                  </div>
+                ) : searchResults && searchResults.length > 0 ? (
+                  <div className="max-h-[50vh] overflow-y-auto py-1">
+                    {searchResults.map((result, idx) => (
+                      <button
+                        key={result.id}
+                        className={cn(
+                          "w-full text-left px-3 py-1.5 transition-colors flex items-center justify-between gap-3 group",
+                          idx === selectedIndex ? "bg-muted/80" : "hover:bg-muted/50"
+                        )}
+                        onMouseEnter={() => setSelectedIndex(idx)}
+                        onClick={() => {
+                          setActiveSearchPopupId(result.id);
+                          setActiveSearchMemory(result);
+                          setSearchQuery("");
+                          setSelectedIndex(-1);
+                        }}
+                      >
+                        <div className="flex flex-col overflow-hidden">
+                          <span className="text-[13px] font-medium text-foreground group-hover:text-primary transition-colors truncate">{result.title}</span>
+                          <span className="text-[10px] text-muted-foreground truncate">{result.locationTag || result.narrative}</span>
+                        </div>
+                        <span className="text-[10px] font-mono text-muted-foreground/40 shrink-0 tabular-nums">
+                          {result.lat.toFixed(3)}°, {result.lng.toFixed(3)}°
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="p-3 text-center text-xs text-muted-foreground">No places found.</div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
 
         <div
-          title={`Real-Time Stream: ${status.label}`}
-          className="hidden items-center justify-center sm:flex px-1"
+          className={cn(
+            "flex items-center gap-2 sm:gap-3 transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] shrink-0 overflow-hidden",
+            isPickingLocation 
+              ? "max-w-0 opacity-0 scale-95 pointer-events-none md:max-w-xs md:opacity-100 md:scale-100 md:pointer-events-auto" 
+              : "max-w-xs opacity-100 scale-100 pointer-events-auto"
+          )}
         >
-          <span className={`h-2 w-2 rounded-full ${status.color}`} />
-        </div>
+          <div
+            title={`Real-Time Stream: ${status.label}`}
+            className="hidden items-center justify-center sm:flex px-1 shrink-0"
+          >
+            <span className={`h-2 w-2 rounded-full ${status.color}`} />
+          </div>
 
-        <ThemeToggle />
+          <div className="shrink-0 flex items-center">
+            <ThemeToggle />
+          </div>
 
-        {user ? (
-          <DropdownMenu>
+          <div className="shrink-0 flex items-center">
+          {user ? (
+            <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="icon" className="rounded-full cursor-pointer">
                 <Avatar className="h-8 w-8">
@@ -181,18 +315,16 @@ export function Header({
                   <button
                     type="button"
                     onClick={() => setIsSignUp(false)}
-                    className={`flex-1 rounded-lg py-1.5 text-xs font-semibold transition-all cursor-pointer ${
-                      !isSignUp ? "bg-background text-foreground shadow" : "text-muted-foreground hover:text-foreground"
-                    }`}
+                    className={`flex-1 rounded-lg py-1.5 text-xs font-semibold transition-all cursor-pointer ${!isSignUp ? "bg-background text-foreground shadow" : "text-muted-foreground hover:text-foreground"
+                      }`}
                   >
                     Sign In
                   </button>
                   <button
                     type="button"
                     onClick={() => setIsSignUp(true)}
-                    className={`flex-1 rounded-lg py-1.5 text-xs font-semibold transition-all cursor-pointer ${
-                      isSignUp ? "bg-background text-foreground shadow" : "text-muted-foreground hover:text-foreground"
-                    }`}
+                    className={`flex-1 rounded-lg py-1.5 text-xs font-semibold transition-all cursor-pointer ${isSignUp ? "bg-background text-foreground shadow" : "text-muted-foreground hover:text-foreground"
+                      }`}
                   >
                     Sign Up
                   </button>
@@ -296,19 +428,21 @@ export function Header({
                   </Button>
                 </form>
 
-                <div className="pt-2 border-t border-border/50 text-center">
-                  <Link
-                    to="/login"
-                    onClick={() => setPopoverOpen(false)}
-                    className="text-xs text-primary font-medium hover:underline block"
-                  >
-                    Open full auth page →
-                  </Link>
+                  <div className="pt-2 border-t border-border/50 text-center">
+                    <Link
+                      to="/login"
+                      onClick={() => setPopoverOpen(false)}
+                      className="text-xs text-primary font-medium hover:underline block"
+                    >
+                      Open full auth page →
+                    </Link>
+                  </div>
                 </div>
-              </div>
-            </PopoverContent>
-          </Popover>
-        )}
+              </PopoverContent>
+            </Popover>
+          )}
+          </div>
+        </div>
       </div>
     </header>
   );

@@ -34,11 +34,21 @@ func main() {
 	go hub.Run()
 
 	authHandler := handlers.NewAuthHandler(cfg, database)
+	memoryHandler := handlers.NewMemoryHandler(cfg, database, hub)
 
 	mux := http.NewServeMux()
 
 	// WebSocket real-time stream
 	mux.HandleFunc("/api/v1/ws", hub.ServeWS)
+
+	// Memory routes
+	mux.HandleFunc("GET /api/v1/memories/search", memoryHandler.SearchMemories)
+	mux.HandleFunc("GET /api/v1/memories", memoryHandler.ListMemories)
+	mux.HandleFunc("GET /api/v1/memories/photo/{id}", memoryHandler.GetPhoto)
+	mux.HandleFunc("POST /api/v1/memories", middleware.AuthMiddleware(cfg, memoryHandler.CreateMemory))
+	mux.HandleFunc("PUT /api/v1/memories/{id}", middleware.AuthMiddleware(cfg, memoryHandler.UpdateMemory))
+	mux.HandleFunc("DELETE /api/v1/memories/{id}", middleware.AuthMiddleware(cfg, memoryHandler.DeleteMemory))
+	mux.HandleFunc("DELETE /api/v1/memories/photo/{id}", middleware.AuthMiddleware(cfg, memoryHandler.DeletePhoto))
 
 	// Auth routes
 	mux.HandleFunc("/api/v1/auth/register", authHandler.Register)
