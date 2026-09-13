@@ -35,6 +35,7 @@ func main() {
 
 	authHandler := handlers.NewAuthHandler(cfg, database)
 	memoryHandler := handlers.NewMemoryHandler(cfg, database, hub)
+	mapHandler := handlers.NewMapHandler(cfg)
 
 	mux := http.NewServeMux()
 
@@ -56,6 +57,10 @@ func main() {
 	mux.HandleFunc("/api/v1/auth/me", middleware.AuthMiddleware(cfg, authHandler.Me))
 	mux.HandleFunc("/api/v1/auth/google/login", authHandler.GoogleLogin)
 	mux.HandleFunc("/api/v1/auth/google/callback", authHandler.GoogleCallback)
+	// Map routes
+	mux.HandleFunc("GET /api/v1/map/style", mapHandler.GetStyle)
+	mux.HandleFunc("GET /api/v1/map/proxy/{path...}", mapHandler.Proxy)
+	mux.HandleFunc("POST /api/v1/map/prefetch", mapHandler.Prefetch)
 
 	// Health check endpoint
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {

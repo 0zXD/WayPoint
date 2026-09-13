@@ -115,21 +115,44 @@
   </div>
 
   <script>
-    function updateStatus() {
+    async function updateStatus() {
       const dot = document.getElementById('dot');
       const text = document.getElementById('status-text');
+      
       if (navigator.onLine) {
-        dot.classList.add('online');
-        text.textContent = 'Back online — reloading…';
-        setTimeout(() => location.reload(), 800);
+        // Just because the computer is online doesn't mean our specific server is up.
+        // Let's ping the server to make sure it's actually reachable before reloading!
+        try {
+          const response = await fetch(window.location.href, { method: 'HEAD' });
+          if (response.ok) {
+            dot.classList.add('online');
+            text.textContent = 'Back online — reloading…';
+            setTimeout(() => location.reload(), 800);
+            return;
+          }
+        } catch (e) {
+          // Server is still unreachable
+        }
+        
+        // Computer is online, but server is down
+        dot.classList.remove('online');
+        text.textContent = 'Server is unreachable';
       } else {
         dot.classList.remove('online');
         text.textContent = 'No connection';
       }
     }
+
     window.addEventListener('online', updateStatus);
     window.addEventListener('offline', updateStatus);
+    
+    // Initial check
     updateStatus();
+    
+    // Periodically check if the server is back while we are online
+    setInterval(() => {
+      if (navigator.onLine) updateStatus();
+    }, 5000);
   </script>
 </body>
 </html>

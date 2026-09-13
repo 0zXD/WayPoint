@@ -63,6 +63,19 @@ export async function searchMemories(query: string): Promise<Memory[]> {
       photos: (m.photos || []).map(p => ({ ...p, url: p.url.startsWith('/') ? `${API_BASE}${p.url}` : p.url }))
     }));
   } catch {
-    return [];
+    // When offline, search through locally stored offline memories
+    try {
+      const { getAllOfflineMemories } = await import("./offline");
+      const offline = await getAllOfflineMemories();
+      const q = query.toLowerCase();
+      return offline.filter(
+        (m) =>
+          m.title.toLowerCase().includes(q) ||
+          m.narrative.toLowerCase().includes(q) ||
+          (m.locationTag && m.locationTag.toLowerCase().includes(q))
+      );
+    } catch {
+      return [];
+    }
   }
 }
