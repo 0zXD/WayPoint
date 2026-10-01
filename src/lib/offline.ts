@@ -10,8 +10,8 @@ export async function saveOfflineMemories(memories: Memory[]): Promise<void> {
   try {
     const existing = (await get<Memory[]>(OFFLINE_MEMORIES_KEY)) || [];
     const map = new Map<string, Memory>();
-    existing.forEach((m) => map.set(m.id, m));
-    memories.forEach((m) => map.set(m.id, m));
+    existing.forEach((m) => { if (m && m.id) map.set(m.id, m); });
+    memories.forEach((m) => { if (m && m.id) map.set(m.id, m); });
     await set(OFFLINE_MEMORIES_KEY, Array.from(map.values()));
   } catch (err) {
     console.error("Failed to save offline memories:", err);
@@ -51,10 +51,18 @@ export async function searchLocation(query: string): Promise<GeoResult[]> {
   }
 
   try {
-    // Route through our secure Go proxy to use MapTiler Geocoding API without leaking the API key!
-    const url = `/api/v1/map/proxy/geocoding/${encodeURIComponent(query)}.json?limit=5&language=en`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error("Failed to search location");
+    const key = import.meta.env.VITE_MAPTILER_API_KEY || "3pLaY3WqeKXPqQvGUWll";
+    let res: Response | null = null;
+    try {
+      res = await fetch(
+        `https://api.maptiler.com/geocoding/${encodeURIComponent(query)}.json?key=${key}&limit=5&language=en`
+      );
+    } catch {
+      res = await fetch(
+        `/api/v1/map/proxy/geocoding/${encodeURIComponent(query)}.json?limit=5&language=en`
+      );
+    }
+    if (!res || !res.ok) throw new Error("Failed to search location");
     const data = await res.json();
 
     if (!data.features) return [];
@@ -224,10 +232,11 @@ export async function downloadOfflineRegion(
 
   let memories: Memory[] = [];
   try {
-    memories = await queryClient.fetchQuery({
+    const clusters = await queryClient.fetchQuery({
       queryKey: ["memories", roundedKey],
       queryFn: () => listMemories(bbox)
     });
+    memories = clusters || [];
     // Persist to offline IndexedDB so offline mode displays them immediately!
     if (memories && memories.length > 0) {
       await saveOfflineMemories(memories);

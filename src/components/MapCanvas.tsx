@@ -5,16 +5,22 @@ import { setWorkerUrl, setWorkerCount, prewarm, config as maplibreConfig } from 
 import MapLibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 
 setWorkerUrl(MapLibreWorkerUrl);
-// Use 4 workers to decode vector tiles in parallel across CPU cores
-setWorkerCount(4);
+// Dynamically scale worker threads based on available CPU hardware concurrency (min 2, max 8)
+const optimalWorkerCount =
+  typeof navigator !== "undefined" && navigator.hardwareConcurrency
+    ? Math.min(Math.max(navigator.hardwareConcurrency - 1, 2), 8)
+    : 4;
+setWorkerCount(optimalWorkerCount);
 // Pre-spawn all workers immediately so the map is ready the moment it mounts
 prewarm();
 
 // Maximize parallel image requests so raster satellite tiles don't get throttled
-maplibreConfig.MAX_PARALLEL_IMAGE_REQUESTS = 64;
-maplibreConfig.MAX_PARALLEL_IMAGE_REQUESTS_PER_FRAME = 32;
+maplibreConfig.MAX_PARALLEL_IMAGE_REQUESTS = 128;
+maplibreConfig.MAX_PARALLEL_IMAGE_REQUESTS_PER_FRAME = 64;
 // Retain up to 16 zoom levels of ancestor tiles in the pyramid cache for instant blur-up previews during rapid zoom
 maplibreConfig.MAX_TILE_CACHE_ZOOM_LEVELS = 16;
+
+export const MAPTILER_KEY = import.meta.env.VITE_MAPTILER_API_KEY || "3pLaY3WqeKXPqQvGUWll";
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { formatDistanceToNow } from "date-fns";
@@ -24,7 +30,7 @@ import { toast } from "@/hooks/use-toast";
 import { deleteMemory, listMemories } from "@/lib/memories";
 import { listDrafts, draftToMemory, revokeDraftBlobUrls } from "@/lib/drafts";
 import { getOfflineMemoriesInBBox, saveOfflineMemories } from "@/lib/offline";
-import { useAdaptiveViewport, recordPrefetchLatency } from "@/lib/adaptiveViewport";
+import { PredictiveSatellitePrewarmer, ViewportVelocityTracker } from "@/lib/tilePrewarmer";
 import { useAppStore } from "@/lib/store";
 import { UploadFab } from "./UploadFab";
 import { OfflineDownloader } from "./OfflineDownloader";
@@ -39,34 +45,10 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import type { AuthUser, BBox, Memory } from "@/lib/types";
+import type { AuthUser, BBox, Memory, MemoryCluster } from "@/lib/types";
 
-export type MemoryCluster = {
-  key: string;
-  lat: number;
-  lng: number;
-  memories: Memory[];
-};
-
-export function clusterKey(m: Pick<Memory, "lat" | "lng">) {
-  return `${m.lat.toFixed(5)},${m.lng.toFixed(5)}`;
-}
-
-function buildClusters(memories: Memory[]): MemoryCluster[] {
-  const map = new Map<string, MemoryCluster>();
-  for (const m of memories) {
-    const k = clusterKey(m);
-    const existing = map.get(k);
-    if (existing) existing.memories.push(m);
-    else map.set(k, { key: k, lat: m.lat, lng: m.lng, memories: [m] });
-  }
-  for (const c of map.values()) {
-    c.memories.sort(
-      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-    );
-  }
-  return [...map.values()];
-}
+import { clusterKey, buildClusters } from "@/lib/clusters";
+export { clusterKey, buildClusters };
 
 function round(b: BBox): BBox {
   // Round to 1 decimal place (~11km) to create highly stable cache keys. 
@@ -75,103 +57,6 @@ function round(b: BBox): BBox {
   return { minLng: r(b.minLng), minLat: r(b.minLat), maxLng: r(b.maxLng), maxLat: r(b.maxLat) };
 }
 
-function lng2tile(lon: number, zoom: number): number {
-  return Math.floor(((lon + 180) / 360) * Math.pow(2, zoom));
-}
-
-function lat2tile(lat: number, zoom: number): number {
-  const latRad = (lat * Math.PI) / 180;
-  return Math.floor(
-    ((1 - Math.asinh(Math.tan(latRad)) / Math.PI) / 2) * Math.pow(2, zoom)
-  );
-}
-
-interface VirtualTileOptions {
-  bufferRatio: number;
-  maxTiles: number;
-  tilePrefix: string;
-  extension: string;
-  includeParents?: boolean;
-}
-
-function getVirtualViewportTiles(map: any, options: VirtualTileOptions): string[] {
-  try {
-    const b = map.getBounds();
-    const rawZoom = map.getZoom();
-    const z = Math.min(20, Math.max(0, Math.floor(rawZoom)));
-    const maxCoord = Math.pow(2, z) - 1;
-
-    // Physical screen bounds
-    const west = b.getWest();
-    const east = b.getEast();
-    const north = b.getNorth();
-    const south = b.getSouth();
-
-    const lngSpan = Math.abs(east - west);
-    const latSpan = Math.abs(north - south);
-
-    // Dynamic virtual screen expansion (bufferRatio on each border)
-    // e.g. bufferRatio = 0.62 expands screen width and height by 1 + 2*0.62 = 2.24x (like 224 to 500 px)
-    const virtWest = west - lngSpan * options.bufferRatio;
-    const virtEast = east + lngSpan * options.bufferRatio;
-    const virtNorth = north + latSpan * options.bufferRatio;
-    const virtSouth = south - latSpan * options.bufferRatio;
-
-    const x1 = lng2tile(Math.max(-180, virtWest), z);
-    const x2 = lng2tile(Math.min(180, virtEast), z);
-    const y1 = lat2tile(Math.min(85.0511, virtNorth), z);
-    const y2 = lat2tile(Math.max(-85.0511, virtSouth), z);
-
-    const minX = Math.max(0, Math.min(maxCoord, Math.min(x1, x2)));
-    const maxX = Math.max(0, Math.min(maxCoord, Math.max(x1, x2)));
-    const minY = Math.max(0, Math.min(maxCoord, Math.min(y1, y2)));
-    const maxY = Math.max(0, Math.min(maxCoord, Math.max(y1, y2)));
-
-    const midX = (minX + maxX) / 2;
-    const midY = (minY + maxY) / 2;
-
-    const tileCoords: { x: number; y: number; distSq: number }[] = [];
-    for (let x = minX; x <= maxX; x++) {
-      for (let y = minY; y <= maxY; y++) {
-        const dx = x - midX;
-        const dy = y - midY;
-        tileCoords.push({ x, y, distSq: dx * dx + dy * dy });
-      }
-    }
-
-    // Prioritize tiles closest to viewport center outward (radial order)
-    tileCoords.sort((a, b) => a.distSq - b.distSq);
-
-    const selected = tileCoords.slice(0, options.maxTiles);
-
-    const result: string[] = [];
-
-    // Hierarchical Pyramid Pre-warming: Include 1-3 ancestor parent tiles at (z - 2) and (z - 1)
-    // FIRST so MapLibre can render an immediate full-screen bilinear preview in 150ms!
-    if (options.includeParents && z >= 4) {
-      const seenParents = new Set<string>();
-      const pz = Math.max(0, z - 2);
-      const scale = Math.pow(2, z - pz);
-      for (const t of selected) {
-        const px = Math.floor(t.x / scale);
-        const py = Math.floor(t.y / scale);
-        const key = `${options.tilePrefix}/${pz}/${px}/${py}${options.extension}`;
-        if (!seenParents.has(key)) {
-          seenParents.add(key);
-          result.push(key);
-        }
-      }
-    }
-
-    for (const t of selected) {
-      result.push(`${options.tilePrefix}/${z}/${t.x}/${t.y}${options.extension}`);
-    }
-
-    return result;
-  } catch {
-    return [];
-  }
-}
 
 export function MapCanvas({
   onMemories,
@@ -198,18 +83,47 @@ function MapCanvasInner({
   const [bbox, setBbox] = useState<BBox | null>(null);
   const isDark = useIsDarkTheme();
   const [mapMode, setMapMode] = useState<"vector" | "satellite">("vector");
+  const mapModeRef = useRef(mapMode);
+  mapModeRef.current = mapMode;
   
   // Base map style always stays mounted (no heavy WebGL teardown when toggling satellite!)
   const mapStyleId = isDark ? "dataviz-dark" : "dataviz-light";
-  const [styleObject, setStyleObject] = useState<any>(null);
+  const [styleObject, setStyleObject] = useState<any>(() => {
+    if (typeof window === "undefined") return null;
+    try {
+      const stored = localStorage.getItem("atlas-theme");
+      const currentDark = stored === "dark" || (stored !== "light" && (
+        typeof document !== "undefined" && (document.documentElement.classList.contains("dark") || window.matchMedia("(prefers-color-scheme: dark)").matches)
+      ));
+      const targetId = currentDark ? "dataviz-dark" : "dataviz-light";
+      const cached = sessionStorage.getItem(`waypoint_unified_style_v6_${targetId}`);
+      if (cached) {
+        return JSON.parse(cached);
+      }
+    } catch {}
+    return null;
+  });
   const styleCacheRef = useRef<Record<string, any>>({});
   const satelliteOverlayIdsRef = useRef<string[]>([]);
   const fadeTimeoutRef = useRef<number | null>(null);
 
+  // Predictive Satellite Prewarming engine (strictly prewarms satellite tiles for predicted final viewport)
+  const prewarmerRef = useRef<PredictiveSatellitePrewarmer>(new PredictiveSatellitePrewarmer(MAPTILER_KEY));
+  const velocityTrackerRef = useRef<ViewportVelocityTracker>(new ViewportVelocityTracker());
+
+  useEffect(() => {
+    if (prewarmerRef.current) {
+      prewarmerRef.current.setForegroundPressureCallback(() => {
+        const map = mapRef.current?.getMap();
+        return map ? map.areTilesLoaded() : true;
+      });
+    }
+  }, []);
+
   // Helper to construct a unified style containing:
   // 1. All clean, pristine vector layers for vector mode (paint & layout properties untouched so buildings & 3D details never disappear!)
   // 2. All authentic Satellite Hybrid layers for satellite mode (positioned above vector layers)
-  // 3. Smooth 350ms raster crossfade on sat_Satellite
+  // 3. Progressive two-tier satellite rendering: instant low-res backdrop (maxzoom 8) + smooth high-res layer (maxzoom 22)
   const prepareStyle = useCallback((baseStyle: any, hybridStyle: any) => {
     const s = JSON.parse(JSON.stringify(baseStyle));
     if (s.sprite && s.sprite.startsWith("/")) {
@@ -226,24 +140,38 @@ function MapCanvasInner({
         }
       }
 
-      // Inline satellite raster source (512x512 progressive tiles, maxzoom 20 matches MapTiler Satellite)
+      // Inline direct MapTiler satellite raster sources:
+      // 1. Low-res satellite backdrop source (512x512, maxzoom 12)
+      //    At zoom 12, a single tile covers ~10km and is ~75KB.
+      //    In any neighborhood/city viewport, 1 single tile covers the entire screen,
+      //    loading in ~40ms to provide an authentic photographic preview with visible terrain,
+      //    rivers, roads and landmarks before high-res tiles stream in.
+      s.sources.satellite_base = {
+        type: "raster",
+        tiles: [`https://api.maptiler.com/tiles/satellite-v2/{z}/{x}/{y}.jpg?key=${MAPTILER_KEY}&base=true`],
+        tileSize: 512,
+        minzoom: 0,
+        maxzoom: 12,
+      };
+
+      // 2. High-res satellite raster source (512x512 progressive tiles, maxzoom 22)
+      //    Directly streams over HTTP/3 & HTTP/2 from Cloudflare Anycast CDN with zero proxy latency
       s.sources.satellite = {
         type: "raster",
-        tiles: [`${window.location.origin}/api/v1/map/proxy/tiles/satellite-v2/{z}/{x}/{y}.jpg`],
+        tiles: [`https://api.maptiler.com/tiles/satellite-v2/{z}/{x}/{y}.jpg?key=${MAPTILER_KEY}`],
         tileSize: 512,
-        maxzoom: 20,
+        minzoom: 0,
+        maxzoom: 22,
         attribution:
           '<a href="https://www.maptiler.com/copyright/" target="_blank">&copy; MapTiler</a> <a href="https://www.openstreetmap.org/copyright" target="_blank">&copy; OpenStreetMap contributors</a>',
       };
 
-      // Inline vector planet tiles too (maxzoom 15 matches MapTiler Planet v3)
+      // Direct vector planet tiles if not already pointing directly to MapTiler
       if (s.sources.maptiler_planet && s.sources.maptiler_planet.type === "vector") {
-        s.sources.maptiler_planet = {
-          type: "vector",
-          tiles: [`${window.location.origin}/api/v1/map/proxy/tiles/v3/{z}/{x}/{y}.pbf`],
-          minzoom: 0,
-          maxzoom: 15,
-        };
+        delete s.sources.maptiler_planet.url; // Force direct tile URLs instead of hitting tiles.json proxy
+        s.sources.maptiler_planet.tiles = [`https://api.maptiler.com/tiles/v3/{z}/{x}/{y}.pbf?key=${MAPTILER_KEY}`];
+        s.sources.maptiler_planet.minzoom = 0;
+        s.sources.maptiler_planet.maxzoom = 15;
       }
     }
 
@@ -255,31 +183,53 @@ function MapCanvasInner({
 
     // 2. Inject the Satellite Hybrid layers positioned above the vector layers
     if (hybridStyle && hybridStyle.layers) {
+      const isCurrentSat = mapModeRef.current === "satellite";
       const satOverlayIds: string[] = [];
       hybridStyle.layers.forEach((hl: any) => {
         const satLayer = JSON.parse(JSON.stringify(hl));
         satLayer.id = "sat_" + satLayer.id;
 
         if (satLayer.id === "sat_Satellite") {
-          // Raster photo sits above all vector layers.
-          // Start at opacity 0 with 350ms transition and visibility none so panning in vector mode doesn't load/abort satellite tiles!
-          if (!satLayer.paint) satLayer.paint = {};
-          satLayer.paint["raster-opacity"] = 0;
-          satLayer.paint["raster-opacity-transition"] = { duration: 350 };
-          if (!satLayer.layout) satLayer.layout = {};
-          satLayer.layout.visibility = "none";
+          // Low-res satellite backdrop layer: positioned directly underneath the high-res satellite layer.
+          // Keep visibility visible so MapLibre quietly loads the single 35KB low-res tile in the background
+          // as the user pans around in vector mode. When switching to satellite mode, it renders in 0ms!
+          const satBaseLayer = {
+            id: "sat_Satellite_base",
+            type: "raster",
+            source: "satellite_base",
+            paint: {
+              "raster-opacity": isCurrentSat ? 1 : 0,
+              "raster-resampling": "linear",
+              "raster-fade-duration": 0,
+            },
+            layout: {
+              visibility: "visible",
+            },
+          };
+          s.layers.push(satBaseLayer);
+
+          // High-res satellite layer with linear resampling and smooth fade-in over the low-res backdrop
+          satLayer.paint = {
+            "raster-opacity": isCurrentSat ? 0.99 : 0,
+            "raster-resampling": "linear",
+            "raster-fade-duration": 300,
+          };
+          satLayer.layout = {
+            visibility: isCurrentSat ? "visible" : "none",
+          };
+          s.layers.push(satLayer);
         } else {
-          // Satellite hybrid overlays (roads, labels, borders) are hidden initially
+          // Satellite hybrid overlays (roads, labels, borders)
           satOverlayIds.push(satLayer.id);
           if (!satLayer.layout) satLayer.layout = {};
-          satLayer.layout.visibility = "none";
+          satLayer.layout.visibility = isCurrentSat ? "visible" : "none";
           
           // Use loaded font stacks so zero extra font round-trips occur
           if (satLayer.type === "symbol") {
             satLayer.layout["text-font"] = ["Metropolis Semi Bold", "Noto Sans Bold"];
           }
+          s.layers.push(satLayer);
         }
-        s.layers.push(satLayer);
       });
       satelliteOverlayIdsRef.current = satOverlayIds;
     }
@@ -287,12 +237,28 @@ function MapCanvasInner({
     return s;
   }, []);
 
-  // Pre-fetch all styles ONCE on mount and construct the decoupled multi-mode styles
+  // Pre-fetch all styles directly from MapTiler Edge CDN on mount (with fallback to local proxy/offline)
   useEffect(() => {
+    const fetchStyle = async (id: string) => {
+      // 1. Direct from MapTiler CDN (multiplexed HTTP/2 / HTTP/3 from edge)
+      try {
+        const directRes = await fetch(`https://api.maptiler.com/maps/${id}/style.json?key=${MAPTILER_KEY}`);
+        if (directRes.ok) return await directRes.json();
+      } catch (err) {
+        console.warn(`Direct fetch for ${id} style failed, falling back:`, err);
+      }
+      // 2. Fallback to local Go proxy or offline Service Worker cache
+      try {
+        const localRes = await fetch(`/api/v1/map/style?id=${id}`);
+        if (localRes.ok) return await localRes.json();
+      } catch {}
+      return null;
+    };
+
     Promise.all([
-      fetch("/api/v1/map/style?id=dataviz-dark").then((r) => (r.ok ? r.json() : null)),
-      fetch("/api/v1/map/style?id=dataviz-light").then((r) => (r.ok ? r.json() : null)),
-      fetch("/api/v1/map/style?id=hybrid").then((r) => (r.ok ? r.json() : null)),
+      fetchStyle("dataviz-dark"),
+      fetchStyle("dataviz-light"),
+      fetchStyle("hybrid"),
     ])
       .then(([dark, light, hybrid]) => {
         if (!dark || !light || !hybrid) return;
@@ -301,6 +267,11 @@ function MapCanvasInner({
         styleCacheRef.current["dataviz-dark"] = preparedDark;
         styleCacheRef.current["dataviz-light"] = preparedLight;
         
+        try {
+          sessionStorage.setItem("waypoint_unified_style_v6_dataviz-dark", JSON.stringify(preparedDark));
+          sessionStorage.setItem("waypoint_unified_style_v6_dataviz-light", JSON.stringify(preparedLight));
+        } catch {}
+
         // Dynamically get current theme rather than stale initial value
         const stored = typeof localStorage !== "undefined" ? localStorage.getItem("atlas-theme") : null;
         const currentDark = stored === "dark" || (stored !== "light" && (
@@ -319,11 +290,17 @@ function MapCanvasInner({
     }
   }, [mapStyleId]);
 
-  // Silky-smooth 350ms cross-fade between Vector and Satellite view
-  // Uses GPU raster-opacity transition on sat_Satellite without touching or hiding vector layers!
+  // Clean show/hide toggle between Vector and Satellite view
   const applyMapMode = useCallback((mode: "vector" | "satellite") => {
     const map = mapRef.current?.getMap();
-    if (!map || !map.isStyleLoaded()) return;
+    if (!map) return;
+
+    // Layer must exist in map style before toggling properties
+    if (!map.style || !map.getLayer("sat_Satellite") || !map.getLayer("sat_Satellite_base")) {
+      window.setTimeout(() => applyMapMode(mode), 50);
+      window.setTimeout(() => applyMapMode(mode), 150);
+      return;
+    }
 
     if (fadeTimeoutRef.current) {
       window.clearTimeout(fadeTimeoutRef.current);
@@ -334,51 +311,79 @@ function MapCanvasInner({
 
     try {
       if (isSat) {
-        // 1. Explicitly enable sat_Satellite layout visibility so MapLibre requests tiles for the current viewport!
+        if (map.getLayer("sat_Satellite_base")) {
+          map.setLayoutProperty("sat_Satellite_base", "visibility", "visible");
+          map.setPaintProperty("sat_Satellite_base", "raster-opacity", 1);
+        }
         if (map.getLayer("sat_Satellite")) {
           map.setLayoutProperty("sat_Satellite", "visibility", "visible");
-          map.setPaintProperty("sat_Satellite", "raster-opacity", 1);
+          map.setPaintProperty("sat_Satellite", "raster-opacity", 0.99);
         }
 
-        // 2. Make satellite overlay layers (roads, labels) visible
-        satelliteOverlayIdsRef.current.forEach((id) => {
+        const overlayIds = satelliteOverlayIdsRef.current.length > 0
+          ? satelliteOverlayIdsRef.current
+          : (map.getStyle()?.layers || [])
+              .map((l: any) => l.id)
+              .filter((id: string) => id.startsWith("sat_") && id !== "sat_Satellite" && id !== "sat_Satellite_base");
+
+        overlayIds.forEach((id: string) => {
           if (map.getLayer(id)) {
             map.setLayoutProperty(id, "visibility", "visible");
           }
         });
 
-        // 3. Force MapLibre to immediately process tile requests and redraw the viewport
         map.triggerRepaint();
       } else {
-        // 1. Hide satellite overlay layers immediately so crisp vector styling takes over
-        satelliteOverlayIdsRef.current.forEach((id) => {
+        if (map.getLayer("sat_Satellite_base")) {
+          // Keep visibility visible so MapLibre quietly maintains the 1 low-res tile in cache for current area
+          map.setLayoutProperty("sat_Satellite_base", "visibility", "visible");
+          map.setPaintProperty("sat_Satellite_base", "raster-opacity", 0);
+        }
+        if (map.getLayer("sat_Satellite")) {
+          map.setLayoutProperty("sat_Satellite", "visibility", "none");
+          map.setPaintProperty("sat_Satellite", "raster-opacity", 0);
+        }
+
+        const overlayIds = satelliteOverlayIdsRef.current.length > 0
+          ? satelliteOverlayIdsRef.current
+          : (map.getStyle()?.layers || [])
+              .map((l: any) => l.id)
+              .filter((id: string) => id.startsWith("sat_") && id !== "sat_Satellite" && id !== "sat_Satellite_base");
+
+        overlayIds.forEach((id: string) => {
           if (map.getLayer(id)) {
             map.setLayoutProperty(id, "visibility", "none");
           }
         });
 
-        // 2. Hardware cross-fade satellite imagery to 0 (350ms duration)
-        // Revealing the pristine, fully intact vector buildings & roads underneath!
-        if (map.getLayer("sat_Satellite")) {
-          map.setPaintProperty("sat_Satellite", "raster-opacity", 0);
-        }
-
-        // 3. After 350ms fade completes, set sat_Satellite visibility to "none"
-        // This stops MapLibre from wasting network requests and aborting tiles while panning in vector mode!
-        fadeTimeoutRef.current = window.setTimeout(() => {
-          if (map.getLayer("sat_Satellite")) {
-            map.setLayoutProperty("sat_Satellite", "visibility", "none");
-          }
-        }, 360);
+        map.triggerRepaint();
       }
-    } catch {
-      // Style may still be mounting
+    } catch (err) {
+      console.warn("Could not apply map mode:", err);
     }
   }, []);
 
   useEffect(() => {
     applyMapMode(mapMode);
-  }, [mapMode, applyMapMode]);
+    // When switching map modes, ensure current viewport satellite tiles are prewarmed
+    const map = mapRef.current?.getMap();
+    if (map && prewarmerRef.current) {
+      try {
+        const bounds = map.getBounds();
+        if (bounds) {
+          prewarmerRef.current.prewarmTier1(
+            {
+              minLng: bounds.getWest(),
+              minLat: bounds.getSouth(),
+              maxLng: bounds.getEast(),
+              maxLat: bounds.getNorth(),
+            },
+            map.getZoom()
+          );
+        }
+      } catch {}
+    }
+  }, [mapMode, styleObject, applyMapMode]);
 
   useEffect(() => {
     return () => {
@@ -386,27 +391,6 @@ function MapCanvasInner({
         window.clearTimeout(fadeTimeoutRef.current);
       }
     };
-  }, []);
-
-  // Pre-warm global base satellite tiles (Zoom 0 to 2: 21 tiles total, ~800KB) in idle time
-  // This guarantees the world satellite view is ALREADY in memory when the user toggles it!
-  useEffect(() => {
-    const prewarmSatellite = () => {
-      const baseTiles = [
-        "0/0/0.jpg",
-        "1/0/0.jpg", "1/0/1.jpg", "1/1/0.jpg", "1/1/1.jpg",
-        "2/0/0.jpg", "2/0/1.jpg", "2/0/2.jpg", "2/0/3.jpg",
-        "2/1/0.jpg", "2/1/1.jpg", "2/1/2.jpg", "2/1/3.jpg",
-        "2/2/0.jpg", "2/2/1.jpg", "2/2/2.jpg", "2/2/3.jpg",
-        "2/3/0.jpg", "2/3/1.jpg", "2/3/2.jpg", "2/3/3.jpg",
-      ];
-      baseTiles.forEach((coord) => {
-        fetch(`/api/v1/map/proxy/tiles/satellite-v2/${coord}`, { priority: "low" as any }).catch(() => {});
-      });
-    };
-
-    const timer = window.setTimeout(prewarmSatellite, 1500);
-    return () => window.clearTimeout(timer);
   }, []);
 
   // Offline detection: gracefully fallback to vector map if satellite is selected while offline
@@ -428,12 +412,6 @@ function MapCanvasInner({
   const setBBoxStore = useAppStore((s) => s.setBBox);
   const setOpenClusterKey = useAppStore((s) => s.setOpenClusterKey);
   const debounceRef = useRef<number | null>(null);
-  const idlePrefetchTimerRef = useRef<number | null>(null);
-  const activePrefetchAbortRef = useRef<AbortController | null>(null);
-
-  const adaptiveConfig = useAdaptiveViewport();
-  const adaptiveConfigRef = useRef(adaptiveConfig);
-  adaptiveConfigRef.current = adaptiveConfig;
 
   // User's current GPS location (persisted in localStorage for instant rendering on refresh)
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(() => {
@@ -611,12 +589,16 @@ function MapCanvasInner({
     }
   }, [draftsQuery.data]);
 
-  const [serverMemories, setServerMemories] = useState<Memory[]>([]);
+  const [serverClusters, setServerClusters] = useState<MemoryCluster[]>([]);
+  const [offlineMemories, setOfflineMemories] = useState<Memory[]>([]);
 
   useEffect(() => {
     if (query.data) {
-      setServerMemories(query.data);
-      saveOfflineMemories(query.data);
+      setServerClusters(buildClusters(query.data));
+      // Save flat memories for offline store persistence
+      if (query.data.length > 0) {
+        saveOfflineMemories(query.data);
+      }
     }
   }, [query.data]);
 
@@ -626,7 +608,7 @@ function MapCanvasInner({
     let isCancelled = false;
     getOfflineMemoriesInBBox(bbox).then((offline) => {
       if (isCancelled || offline.length === 0) return;
-      setServerMemories((prev) => {
+      setOfflineMemories((prev) => {
         const map = new Map<string, Memory>();
         offline.forEach((m) => map.set(m.id, m));
         prev.forEach((m) => map.set(m.id, m));
@@ -639,23 +621,54 @@ function MapCanvasInner({
   }, [bbox]);
 
   const activeSearchMemory = useAppStore((s) => s.activeSearchMemory);
-  
-  const allMemories = useMemo(() => {
+
+  const clusters = useMemo(() => {
     if (!user) return [];
     const drafts = draftsQuery.data ?? [];
-    
-    const merged = new Map<string, Memory>();
-    serverMemories.forEach(m => merged.set(m.id, m));
-    drafts.forEach(m => merged.set(m.id, m));
-    
-    if (activeSearchMemory) {
-      merged.set(activeSearchMemory.id, activeSearchMemory);
-    }
-    
-    return Array.from(merged.values());
-  }, [serverMemories, draftsQuery.data, user, activeSearchMemory]);
 
-  const clusters = useMemo(() => buildClusters(allMemories), [allMemories]);
+    // 1. Online: Use server-calculated clusters directly from Go backend.
+    // 2. Offline fallback: Cluster local IndexedDB memories on the client.
+    let baseClusters: MemoryCluster[] = [];
+    if (serverClusters.length > 0) {
+      baseClusters = serverClusters;
+    } else if (offlineMemories.length > 0) {
+      baseClusters = buildClusters(offlineMemories);
+    }
+
+    if (drafts.length === 0 && !activeSearchMemory) {
+      return baseClusters;
+    }
+
+    // Merge un-synced drafts or active search item into the clusters
+    const map = new Map<string, MemoryCluster>();
+    for (const c of baseClusters) {
+      map.set(c.key, { ...c, memories: [...c.memories] });
+    }
+
+    const extraMemories = [...drafts];
+    if (activeSearchMemory && !extraMemories.some((m) => m.id === activeSearchMemory.id)) {
+      extraMemories.push(activeSearchMemory);
+    }
+
+    for (const d of extraMemories) {
+      const k = clusterKey(d);
+      const existing = map.get(k);
+      if (existing) {
+        if (!existing.memories.some((m) => m.id === d.id)) {
+          existing.memories.unshift(d);
+          existing.count = existing.memories.length;
+        }
+      } else {
+        map.set(k, { key: k, lat: d.lat, lng: d.lng, count: 1, memories: [d] });
+      }
+    }
+
+    return Array.from(map.values());
+  }, [user, serverClusters, offlineMemories, draftsQuery.data, activeSearchMemory]);
+
+  const allMemories = useMemo(() => {
+    return clusters.flatMap((c) => c.memories);
+  }, [clusters]);
 
   const onMemoriesRef = useRef(onMemories);
   onMemoriesRef.current = onMemories;
@@ -663,80 +676,49 @@ function MapCanvasInner({
     if (allMemories.length > 0) onMemoriesRef.current(allMemories);
   }, [allMemories]);
 
-  // Proactive background preheating: Dynamically calculates an expanded virtual viewport
-  // (e.g. 224x224 to 500x500 equivalent) based on user's real-time network speed & hardware capacity.
-  // Pre-warms both satellite imagery and adjacent vector tiles once movement has settled.
-  const triggerViewportSatellitePrefetch = useCallback((mapInstance?: any) => {
-    if (idlePrefetchTimerRef.current) {
-      window.clearTimeout(idlePrefetchTimerRef.current);
-      idlePrefetchTimerRef.current = null;
+  const handleDragStart = useCallback(() => {
+    velocityTrackerRef.current.clear();
+    if (prewarmerRef.current) {
+      prewarmerRef.current.abortPending();
     }
-
-    if (activePrefetchAbortRef.current) {
-      activePrefetchAbortRef.current.abort();
-      activePrefetchAbortRef.current = null;
-    }
-
-    const { bufferRatio, maxTiles } = adaptiveConfigRef.current;
-    const map = mapInstance || mapRef.current?.getMap();
-    if (!map) return;
-
-    // 1. Proactively compute virtual expanded satellite tiles with parent pyramid preview
-    const satTiles = getVirtualViewportTiles(map, {
-      bufferRatio,
-      maxTiles,
-      tilePrefix: "tiles/satellite-v2",
-      extension: ".jpg",
-      includeParents: true,
-    });
-
-    // 2. Also preheat adjacent vector tiles for smooth panning in vector mode (up to zoom 15)
-    const rawZoom = map.getZoom();
-    let vectorTiles: string[] = [];
-    if (rawZoom <= 15) {
-      vectorTiles = getVirtualViewportTiles(map, {
-        bufferRatio,
-        maxTiles: Math.min(20, maxTiles),
-        tilePrefix: "tiles/v3",
-        extension: ".pbf",
-      });
-    }
-
-    const allTiles = [...satTiles, ...vectorTiles];
-    if (allTiles.length === 0) return;
-
-    const controller = new AbortController();
-    activePrefetchAbortRef.current = controller;
-    const startTime = performance.now();
-
-    fetch("/api/v1/map/prefetch", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tiles: allTiles, paths: allTiles }),
-      signal: controller.signal,
-    })
-      .then((res) => {
-        if (res.ok) {
-          const elapsed = performance.now() - startTime;
-          recordPrefetchLatency(elapsed);
-        }
-      })
-      .catch(() => {});
   }, []);
 
-  useEffect(() => {
-    triggerViewportSatellitePrefetch();
-  }, [mapMode, triggerViewportSatellitePrefetch]);
+  const handleDrag = useCallback((e: ViewStateChangeEvent) => {
+    const map = e.target;
+    const center = map.getCenter();
+    if (center) {
+      velocityTrackerRef.current.record(center.lng, center.lat, map.getZoom());
+    }
+  }, []);
 
-  useEffect(() => {
-    return () => {
-      if (idlePrefetchTimerRef.current) {
-        window.clearTimeout(idlePrefetchTimerRef.current);
+  // When user releases the map drag, immediately predict where inertia will come to rest
+  // and prefetch satellite tiles for the final destination viewport!
+  const handleDragEnd = useCallback((e: ViewStateChangeEvent) => {
+    const map = e.target;
+    const center = map.getCenter();
+    const bounds = map.getBounds();
+    const zoom = map.getZoom();
+    const result = velocityTrackerRef.current.getVelocityAndConfidence();
+
+    if (center && bounds && result && prewarmerRef.current) {
+      const { velocity, confidence } = result;
+      const isFling = velocity.speed >= 0.00007 || Math.abs(velocity.vZoom) >= 0.001;
+      
+      if (isFling) {
+        prewarmerRef.current.prefetchPredictedViewport(
+          { lng: center.lng, lat: center.lat },
+          {
+            minLng: bounds.getWest(),
+            minLat: bounds.getSouth(),
+            maxLng: bounds.getEast(),
+            maxLat: bounds.getNorth(),
+          },
+          zoom,
+          velocity,
+          confidence
+        );
       }
-      if (activePrefetchAbortRef.current) {
-        activePrefetchAbortRef.current.abort();
-      }
-    };
+    }
   }, []);
 
   const handleMove = useCallback((e: ViewStateChangeEvent) => {
@@ -752,28 +734,73 @@ function MapCanvasInner({
       }, 150);
     }
 
-    // During active swiping/panning, CANCEL any pending or running background prefetch!
-    // This gives 100% of network bandwidth and connection slots to on-screen visible tiles.
-    if (idlePrefetchTimerRef.current) {
-      window.clearTimeout(idlePrefetchTimerRef.current);
-      idlePrefetchTimerRef.current = null;
-    }
-    if (activePrefetchAbortRef.current) {
-      activePrefetchAbortRef.current.abort();
-      activePrefetchAbortRef.current = null;
-    }
+    // Predictive Satellite Prewarming: record continuous pan/zoom velocity during flings
+    try {
+      const center = map.getCenter();
+      if (center) {
+        velocityTrackerRef.current.record(center.lng, center.lat, map.getZoom());
+        const result = velocityTrackerRef.current.getVelocityAndConfidence();
+
+        // Always feed continuous motion to the prediction engine.
+        // The engine internally uses zoom-normalized physics (px/ms) and throttles itself.
+        if (result && prewarmerRef.current) {
+          const { velocity, confidence } = result;
+          const bounds = map.getBounds();
+          if (bounds) {
+            prewarmerRef.current.prefetchPredictedViewport(
+              { lng: center.lng, lat: center.lat },
+              {
+                minLng: bounds.getWest(),
+                minLat: bounds.getSouth(),
+                maxLng: bounds.getEast(),
+                maxLat: bounds.getNorth(),
+              },
+              map.getZoom(),
+              velocity,
+              confidence
+            );
+          }
+        }
+      }
+    } catch {}
   }, [computeExpandedBBox, onCenter, setBBoxStore]);
 
   const handleMoveEnd = useCallback((e: ViewStateChangeEvent) => {
     const map = e.target;
-    // Only prefetch after swiping has completely stopped for 600ms
-    if (idlePrefetchTimerRef.current) {
-      window.clearTimeout(idlePrefetchTimerRef.current);
+    updateViewportBBox(map);
+
+    // Clear velocity samples now that motion has stopped
+    velocityTrackerRef.current.clear();
+
+    // Prewarm satellite tiles for the settled viewport under strict budget
+    try {
+      const bounds = map.getBounds();
+      const zoom = map.getZoom();
+      if (bounds && prewarmerRef.current) {
+        prewarmerRef.current.prewarmTier1(
+          {
+            minLng: bounds.getWest(),
+            minLat: bounds.getSouth(),
+            maxLng: bounds.getEast(),
+            maxLat: bounds.getNorth(),
+          },
+          zoom
+        );
+      }
+    } catch {}
+  }, [updateViewportBBox]);
+
+  // Synchronize satellite & hybrid overlay visibility only when style loads or changes
+  const handleStyleData = useCallback(() => {
+    const map = mapRef.current?.getMap();
+    if (!map || !map.style || !map.getLayer("sat_Satellite") || !map.getLayer("sat_Satellite_base")) return;
+    const isSat = mapMode === "satellite";
+    const currentVis = map.getLayoutProperty("sat_Satellite", "visibility");
+    const targetVis = isSat ? "visible" : "none";
+    if (currentVis !== targetVis) {
+      applyMapMode(mapMode);
     }
-    idlePrefetchTimerRef.current = window.setTimeout(() => {
-      triggerViewportSatellitePrefetch(map);
-    }, 600);
-  }, [triggerViewportSatellitePrefetch]);
+  }, [mapMode, applyMapMode]);
 
   // Handle zooming to actively searched memory
   const activeSearchPopupId = useAppStore((s) => s.activeSearchPopupId);
@@ -809,6 +836,9 @@ function MapCanvasInner({
         .dark-map-filter .maplibregl-canvas {
           filter: brightness(0.9) contrast(1.05) saturate(1.1);
         }
+        .maplibregl-canvas {
+          transition: filter 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
         .maplibregl-popup-content {
           background: none !important;
           padding: 0 !important;
@@ -828,27 +858,51 @@ function MapCanvasInner({
         }}
         minZoom={2.5}
         padding={{ top: 100, bottom: 40, left: 20, right: 20 }}
-        mapStyle={styleObject || `/api/v1/map/style?id=${mapStyleId}`}
+        mapStyle={styleObject || `https://api.maptiler.com/maps/${mapStyleId}/style.json?key=${MAPTILER_KEY}`}
         onError={(e) => console.error("MapGL Error:", e.error)}
         onLoad={(e) => {
           const map = e.target;
+          (window as any).__map = map;
           updateViewportBBox(map);
           applyMapMode(mapMode);
-          triggerViewportSatellitePrefetch(map);
           setTimeout(() => updateViewportBBox(map), 100);
+
+          // Initial prefetch of satellite tiles for starting viewport
+          try {
+            const bounds = map.getBounds();
+            if (bounds && prewarmerRef.current) {
+              prewarmerRef.current.prewarmTier1(
+                {
+                  minLng: bounds.getWest(),
+                  minLat: bounds.getSouth(),
+                  maxLng: bounds.getEast(),
+                  maxLat: bounds.getNorth(),
+                },
+                map.getZoom()
+              );
+            }
+          } catch {}
         }}
-        onStyleData={() => applyMapMode(mapMode)}
+        onStyleData={handleStyleData}
         // --- Smooth vector & satellite rendering & performance ---
         fadeDuration={150}         // snappy 150ms tile transition
         maxTileCacheSize={2000}    // keep up to 2000 tiles in GPU memory while panning
         refreshExpiredTiles={false} // don't refetch tiles that have an Expires header
         reuseMaps={true}           // keep the WebGL context alive between style swaps
+        canvasContextAttributes={{
+          powerPreference: "high-performance",
+          preserveDrawingBuffer: false,
+          antialias: true,
+        }}
         transformRequest={(url) => {
           if (url.startsWith('/api/')) {
             return { url: `${window.location.origin}${url}` };
           }
           return { url };
         }}
+        onDragStart={handleDragStart}
+        onDrag={handleDrag}
+        onDragEnd={handleDragEnd}
         onMove={handleMove}
         onMoveEnd={handleMoveEnd}
         onClick={(e) => {
@@ -919,7 +973,11 @@ function MapCanvasInner({
               }
             }}
           >
-            <div className={`memory-pin ${c.memories.some(m => m.id.startsWith('draft-')) ? 'draft-pin' : ''}`} />
+            <div className={`memory-pin ${c.memories.some(m => m.id?.startsWith('draft-')) ? 'draft-pin' : ''}`}>
+              {c.count > 1 && (
+                <span className="pin-badge">{c.count}</span>
+              )}
+            </div>
           </Marker>
         ))}
 

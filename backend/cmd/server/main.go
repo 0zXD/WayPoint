@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"waypoint-backend/internal/db"
 	"waypoint-backend/internal/handlers"
 	"waypoint-backend/internal/middleware"
+	"waypoint-backend/internal/storage"
 	"waypoint-backend/internal/ws"
 )
 
@@ -30,12 +32,22 @@ func main() {
 		}
 	}
 
+	storageSvc, err := storage.NewLocalStorage(cfg.StorageDir, cfg.PhotoCDNURL)
+	if err != nil {
+		log.Fatalf("Failed to initialize storage service: %v", err)
+	}
+
 	hub := ws.NewHub()
 	go hub.Run()
 
 	authHandler := handlers.NewAuthHandler(cfg, database)
-	memoryHandler := handlers.NewMemoryHandler(cfg, database, hub)
+	memoryHandler := handlers.NewMemoryHandler(cfg, database, hub, storageSvc)
 	mapHandler := handlers.NewMapHandler(cfg)
+
+	// Background migration: extract legacy base64 photos out of PostgreSQL into storage service
+	if database != nil && database.DB != nil {
+		go memoryHandler.MigrateLegacyPhotos(context.Background())
+	}
 
 	mux := http.NewServeMux()
 
@@ -46,6 +58,7 @@ func main() {
 	mux.HandleFunc("GET /api/v1/memories/search", memoryHandler.SearchMemories)
 	mux.HandleFunc("GET /api/v1/memories", memoryHandler.ListMemories)
 	mux.HandleFunc("GET /api/v1/memories/photo/{id}", memoryHandler.GetPhoto)
+	mux.HandleFunc("GET /api/v1/photos/{id}", memoryHandler.GetPhoto)
 	mux.HandleFunc("POST /api/v1/memories", middleware.AuthMiddleware(cfg, memoryHandler.CreateMemory))
 	mux.HandleFunc("PUT /api/v1/memories/{id}", middleware.AuthMiddleware(cfg, memoryHandler.UpdateMemory))
 	mux.HandleFunc("DELETE /api/v1/memories/{id}", middleware.AuthMiddleware(cfg, memoryHandler.DeleteMemory))

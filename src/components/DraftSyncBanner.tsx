@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { toast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
 import { Inbox, Upload, X } from "lucide-react";
-import { listDrafts, deleteDraft, type MemoryDraft } from "@/lib/drafts";
+import { listDrafts, deleteDraft } from "@/lib/drafts";
 import { uploadMemory } from "@/lib/memories";
 import { useAppStore } from "@/lib/store";
 import { cn } from "@/lib/utils";

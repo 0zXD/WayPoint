@@ -30,3 +30,12 @@ type Photo struct {
 	ImageBase64 string `json:"imageBase64"`
 	MimeType    string `json:"mimeType"`
 }
+
+type MemoryCluster struct {
+	Key      string   `json:"key"`
+	Lat      float64  `json:"lat"`
+	Lng      float64  `json:"lng"`
+	Count    int      `json:"count"`
+	Memories []Memory `json:"memories"`
+}
+

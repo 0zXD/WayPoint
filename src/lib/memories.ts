@@ -1,4 +1,4 @@
-import { apiFetch, NetworkTimeoutError } from "./api";
+import { apiFetch } from "./api";
 import type { BBox, Memory } from "./types";
 
 export function normalizeLng(lng: number): number {
@@ -26,7 +26,8 @@ export async function listMemories(bbox: BBox): Promise<Memory[]> {
     minLng: String(bbox.minLng),
     minLat: String(bbox.minLat),
     maxLng: String(bbox.maxLng),
-    maxLat: String(bbox.maxLat)
+    maxLat: String(bbox.maxLat),
+    raw: "true"
   }).toString();
   const results = await apiFetch<Memory[]>(`/api/v1/memories?${query}`);
 
