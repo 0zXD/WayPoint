@@ -151,3 +151,6 @@ backend/.env
 
 # temporary 
 README.md
+
+# Go test files
+*_test.go
