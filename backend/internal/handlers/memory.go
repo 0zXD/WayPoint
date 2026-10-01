@@ -1,11 +1,13 @@
 package handlers
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"strconv"
 	"time"
@@ -14,22 +16,25 @@ import (
 	"waypoint-backend/internal/db"
 	"waypoint-backend/internal/middleware"
 	"waypoint-backend/internal/models"
+	"waypoint-backend/internal/storage"
 	"waypoint-backend/internal/ws"
 
 	"github.com/lib/pq"
 )
 
 type MemoryHandler struct {
-	cfg *config.Config
-	db  *db.DB
-	hub *ws.Hub
+	cfg     *config.Config
+	db      *db.DB
+	hub     *ws.Hub
+	storage storage.Service
 }
 
-func NewMemoryHandler(cfg *config.Config, database *db.DB, hub *ws.Hub) *MemoryHandler {
+func NewMemoryHandler(cfg *config.Config, database *db.DB, hub *ws.Hub, storageSvc storage.Service) *MemoryHandler {
 	return &MemoryHandler{
-		cfg: cfg,
-		db:  database,
-		hub: hub,
+		cfg:     cfg,
+		db:      database,
+		hub:     hub,
+		storage: storageSvc,
 	}
 }
 
@@ -54,9 +59,9 @@ func (h *MemoryHandler) CreateMemory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type UploadedPhoto struct {
-		ID          string
-		ImageBase64 string
-		MimeType    string
+		ID       string
+		MimeType string
+		FileSize int
 	}
 	var uploadedPhotos []UploadedPhoto
 
@@ -74,13 +79,24 @@ func (h *MemoryHandler) CreateMemory(w http.ResponseWriter, r *http.Request) {
 		}
 
 		mimeType := fileHeader.Header.Get("Content-Type")
-		imageBase64 := base64.StdEncoding.EncodeToString(fileBytes)
-		// Small sleep to ensure unique UnixNano for fast loops, or just use loop index
+		if mimeType == "" {
+			mimeType = "image/jpeg"
+		}
+		photoID := fmt.Sprintf("pho-%d", time.Now().UnixNano())
 		time.Sleep(1 * time.Millisecond)
+
+		// Save raw binary directly to storage service (zero base64 database bloat)
+		_, err = h.storage.Save(r.Context(), photoID, fileBytes, mimeType)
+		if err != nil {
+			log.Printf("Failed to save photo to storage: %v", err)
+			http.Error(w, `{"error":"Failed to save photo file"}`, http.StatusInternalServerError)
+			return
+		}
+
 		uploadedPhotos = append(uploadedPhotos, UploadedPhoto{
-			ID:          fmt.Sprintf("pho-%d", time.Now().UnixNano()),
-			ImageBase64: imageBase64,
-			MimeType:    mimeType,
+			ID:       photoID,
+			MimeType: mimeType,
+			FileSize: len(fileBytes),
 		})
 	}
 
@@ -116,10 +132,17 @@ func (h *MemoryHandler) CreateMemory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err = tx.Exec(`
-		INSERT INTO memories (id, user_id, title, narrative, lat, lng, location_tag, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)`,
-		memoryID, userID, title, narrative, lat, lng, locationTag, createdAt)
+	if h.db.HasPostGIS {
+		_, err = tx.Exec(`
+			INSERT INTO memories (id, user_id, title, narrative, lat, lng, geom, location_tag, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, ST_SetSRID(ST_MakePoint($6, $5), 4326), $7, $8, $8)`,
+			memoryID, userID, title, narrative, lat, lng, locationTag, createdAt)
+	} else {
+		_, err = tx.Exec(`
+			INSERT INTO memories (id, user_id, title, narrative, lat, lng, location_tag, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)`,
+			memoryID, userID, title, narrative, lat, lng, locationTag, createdAt)
+	}
 	if err != nil {
 		tx.Rollback()
 		log.Printf("Failed to insert memory: %v", err)
@@ -129,9 +152,9 @@ func (h *MemoryHandler) CreateMemory(w http.ResponseWriter, r *http.Request) {
 
 	for _, p := range uploadedPhotos {
 		_, err = tx.Exec(`
-			INSERT INTO photos (id, memory_id, image_base64, mime_type)
-			VALUES ($1, $2, $3, $4)`,
-			p.ID, memoryID, p.ImageBase64, p.MimeType)
+			INSERT INTO photos (id, memory_id, storage_key, mime_type, file_size)
+			VALUES ($1, $2, $3, $4, $5)`,
+			p.ID, memoryID, p.ID, p.MimeType, p.FileSize)
 		if err != nil {
 			tx.Rollback()
 			log.Printf("Failed to insert photo: %v", err)
@@ -160,6 +183,54 @@ func (h *MemoryHandler) CreateMemory(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, `{"status":"success","id":"%s"}`, memoryID)
 }
 
+func normalizeLng(lng float64) float64 {
+	if lng == 180 {
+		return 180
+	}
+	n := math.Mod(lng+180, 360)
+	if n < 0 {
+		n += 360
+	}
+	res := n - 180
+	if res == -180 && lng > 0 {
+		return 180
+	}
+	return res
+}
+
+func clusterKey(lat, lng float64) string {
+	return fmt.Sprintf("%.5f,%.5f", lat, lng)
+}
+
+func buildClusters(memories []models.Memory) []models.MemoryCluster {
+	clusterMap := make(map[string]*models.MemoryCluster)
+	clusterOrder := make([]string, 0)
+
+	for _, m := range memories {
+		k := clusterKey(m.Lat, m.Lng)
+		if c, exists := clusterMap[k]; exists {
+			c.Memories = append(c.Memories, m)
+			c.Count = len(c.Memories)
+		} else {
+			cluster := &models.MemoryCluster{
+				Key:      k,
+				Lat:      m.Lat,
+				Lng:      m.Lng,
+				Count:    1,
+				Memories: []models.Memory{m},
+			}
+			clusterMap[k] = cluster
+			clusterOrder = append(clusterOrder, k)
+		}
+	}
+
+	result := make([]models.MemoryCluster, len(clusterOrder))
+	for i, k := range clusterOrder {
+		result[i] = *clusterMap[k]
+	}
+	return result
+}
+
 func (h *MemoryHandler) ListMemories(w http.ResponseWriter, r *http.Request) {
 	// Bbox
 	minLng, _ := strconv.ParseFloat(r.URL.Query().Get("minLng"), 64)
@@ -167,22 +238,103 @@ func (h *MemoryHandler) ListMemories(w http.ResponseWriter, r *http.Request) {
 	maxLng, _ := strconv.ParseFloat(r.URL.Query().Get("maxLng"), 64)
 	maxLat, _ := strconv.ParseFloat(r.URL.Query().Get("maxLat"), 64)
 
-	// Since longitude can wrap around (-180 to 180), bounding box queries usually require careful logic.
-	// For simplicity, we just query lat/lng within the bounds, ignoring the wrap around logic for now.
+	var query string
+	var args []interface{}
 
-	query := `
-		SELECT m.id, m.user_id, m.title, m.narrative, m.lat, m.lng, m.location_tag, m.created_at, u.name, COALESCE(u.avatar_url, ''),
-		       ARRAY_REMOVE(ARRAY_AGG(p.id), NULL) AS photo_ids
-		FROM memories m
-		JOIN users u ON m.user_id = u.id
-		LEFT JOIN photos p ON m.id = p.memory_id
-		WHERE m.lat >= $1 AND m.lat <= $2 AND m.lng >= $3 AND m.lng <= $4
-		GROUP BY m.id, u.name, u.avatar_url
-		ORDER BY m.created_at DESC
-		LIMIT 100
-	`
+	spansWorld := (maxLng - minLng) >= 360
+	normMinLng := normalizeLng(minLng)
+	normMaxLng := normalizeLng(maxLng)
 
-	rows, err := h.db.DB.Query(query, minLat, maxLat, minLng, maxLng)
+	if h.db.HasPostGIS {
+		if spansWorld {
+			query = `
+				SELECT m.id, m.user_id, m.title, m.narrative, m.lat, m.lng, m.location_tag, m.created_at, u.name, COALESCE(u.avatar_url, ''),
+				       ARRAY_REMOVE(ARRAY_AGG(p.id), NULL) AS photo_ids
+				FROM memories m
+				JOIN users u ON m.user_id = u.id
+				LEFT JOIN photos p ON m.id = p.memory_id
+				WHERE m.geom IS NOT NULL
+				GROUP BY m.id, u.name, u.avatar_url
+				ORDER BY m.created_at DESC
+				LIMIT 500
+			`
+			args = []interface{}{}
+		} else if normMinLng <= normMaxLng {
+			query = `
+				SELECT m.id, m.user_id, m.title, m.narrative, m.lat, m.lng, m.location_tag, m.created_at, u.name, COALESCE(u.avatar_url, ''),
+				       ARRAY_REMOVE(ARRAY_AGG(p.id), NULL) AS photo_ids
+				FROM memories m
+				JOIN users u ON m.user_id = u.id
+				LEFT JOIN photos p ON m.id = p.memory_id
+				WHERE ST_Contains(ST_MakeEnvelope($1, $2, $3, $4, 4326), m.geom)
+				GROUP BY m.id, u.name, u.avatar_url
+				ORDER BY m.created_at DESC
+				LIMIT 500
+			`
+			args = []interface{}{normMinLng, minLat, normMaxLng, maxLat}
+		} else {
+			// International Date Line wrap-around with PostGIS envelopes
+			query = `
+				SELECT m.id, m.user_id, m.title, m.narrative, m.lat, m.lng, m.location_tag, m.created_at, u.name, COALESCE(u.avatar_url, ''),
+				       ARRAY_REMOVE(ARRAY_AGG(p.id), NULL) AS photo_ids
+				FROM memories m
+				JOIN users u ON m.user_id = u.id
+				LEFT JOIN photos p ON m.id = p.memory_id
+				WHERE (
+					ST_Contains(ST_MakeEnvelope($1, $2, 180, $3, 4326), m.geom) OR
+					ST_Contains(ST_MakeEnvelope(-180, $2, $4, $3, 4326), m.geom)
+				)
+				GROUP BY m.id, u.name, u.avatar_url
+				ORDER BY m.created_at DESC
+				LIMIT 500
+			`
+			args = []interface{}{normMinLng, minLat, maxLat, normMaxLng}
+		}
+	} else {
+		if spansWorld {
+			query = `
+				SELECT m.id, m.user_id, m.title, m.narrative, m.lat, m.lng, m.location_tag, m.created_at, u.name, COALESCE(u.avatar_url, ''),
+				       ARRAY_REMOVE(ARRAY_AGG(p.id), NULL) AS photo_ids
+				FROM memories m
+				JOIN users u ON m.user_id = u.id
+				LEFT JOIN photos p ON m.id = p.memory_id
+				WHERE m.lat >= $1 AND m.lat <= $2
+				GROUP BY m.id, u.name, u.avatar_url
+				ORDER BY m.created_at DESC
+				LIMIT 500
+			`
+			args = []interface{}{minLat, maxLat}
+		} else if normMinLng <= normMaxLng {
+			query = `
+				SELECT m.id, m.user_id, m.title, m.narrative, m.lat, m.lng, m.location_tag, m.created_at, u.name, COALESCE(u.avatar_url, ''),
+				       ARRAY_REMOVE(ARRAY_AGG(p.id), NULL) AS photo_ids
+				FROM memories m
+				JOIN users u ON m.user_id = u.id
+				LEFT JOIN photos p ON m.id = p.memory_id
+				WHERE m.lat >= $1 AND m.lat <= $2 AND m.lng >= $3 AND m.lng <= $4
+				GROUP BY m.id, u.name, u.avatar_url
+				ORDER BY m.created_at DESC
+				LIMIT 500
+			`
+			args = []interface{}{minLat, maxLat, normMinLng, normMaxLng}
+		} else {
+			// Spanning the International Date Line (anti-meridian wrap-around)
+			query = `
+				SELECT m.id, m.user_id, m.title, m.narrative, m.lat, m.lng, m.location_tag, m.created_at, u.name, COALESCE(u.avatar_url, ''),
+				       ARRAY_REMOVE(ARRAY_AGG(p.id), NULL) AS photo_ids
+				FROM memories m
+				JOIN users u ON m.user_id = u.id
+				LEFT JOIN photos p ON m.id = p.memory_id
+				WHERE m.lat >= $1 AND m.lat <= $2 AND (m.lng >= $3 OR m.lng <= $4)
+				GROUP BY m.id, u.name, u.avatar_url
+				ORDER BY m.created_at DESC
+				LIMIT 500
+			`
+			args = []interface{}{minLat, maxLat, normMinLng, normMaxLng}
+		}
+	}
+
+	rows, err := h.db.DB.Query(query, args...)
 	if err != nil {
 		log.Printf("Failed to list memories: %v", err)
 		http.Error(w, `{"error":"Failed to fetch memories"}`, http.StatusInternalServerError)
@@ -190,7 +342,7 @@ func (h *MemoryHandler) ListMemories(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	var memories []models.Memory
+	memories := make([]models.Memory, 0)
 	for rows.Next() {
 		var m models.Memory
 		var photoIDs pq.StringArray
@@ -203,7 +355,7 @@ func (h *MemoryHandler) ListMemories(w http.ResponseWriter, r *http.Request) {
 		for _, pid := range photoIDs {
 			m.Photos = append(m.Photos, models.PhotoResponse{
 				ID:  pid,
-				URL: fmt.Sprintf("/api/v1/memories/photo/%s", pid),
+				URL: h.storage.GetURL(pid),
 			})
 		}
 
@@ -211,7 +363,13 @@ func (h *MemoryHandler) ListMemories(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(memories)
+	if r.URL.Query().Get("raw") == "true" {
+		json.NewEncoder(w).Encode(memories)
+		return
+	}
+
+	clusters := buildClusters(memories)
+	json.NewEncoder(w).Encode(clusters)
 }
 
 func (h *MemoryHandler) SearchMemories(w http.ResponseWriter, r *http.Request) {
@@ -299,6 +457,8 @@ func (h *MemoryHandler) DeletePhoto(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	_ = h.storage.Delete(r.Context(), photoID)
+
 	_, err = h.db.DB.Exec("DELETE FROM photos WHERE id = $1", photoID)
 	if err != nil {
 		http.Error(w, `{"error":"Failed to delete photo"}`, http.StatusInternalServerError)
@@ -316,9 +476,21 @@ func (h *MemoryHandler) GetPhoto(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var imageBase64, mimeType string
-	err := h.db.DB.QueryRow("SELECT image_base64, mime_type FROM photos WHERE id = $1", photoID).Scan(&imageBase64, &mimeType)
-	if err != nil {
+	// 1. Direct from high-performance storage service (zero base64 decoding!)
+	reader, mimeType, size, err := h.storage.Get(r.Context(), photoID)
+	if err == nil {
+		defer reader.Close()
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		w.Header().Set("Content-Type", mimeType)
+		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+		io.Copy(w, reader)
+		return
+	}
+
+	// 2. Fallback to legacy database base64 (with auto-cache to storage)
+	var imageBase64, dbMime string
+	err = h.db.DB.QueryRow("SELECT COALESCE(image_base64, ''), mime_type FROM photos WHERE id = $1", photoID).Scan(&imageBase64, &dbMime)
+	if err != nil || imageBase64 == "" {
 		http.Error(w, "Photo not found", http.StatusNotFound)
 		return
 	}
@@ -329,9 +501,13 @@ func (h *MemoryHandler) GetPhoto(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Important: add caching headers so the browser doesn't refetch the photo constantly
-	w.Header().Set("Cache-Control", "public, max-age=31536000")
-	w.Header().Set("Content-Type", mimeType)
+	// Persist to storage service asynchronously so next request is instant
+	go func() {
+		_, _ = h.storage.Save(context.Background(), photoID, data, dbMime)
+	}()
+
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	w.Header().Set("Content-Type", dbMime)
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	w.Write(data)
 }
@@ -344,6 +520,22 @@ func (h *MemoryHandler) DeleteMemory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userID := r.Context().Value(middleware.UserIDKey).(string)
+
+	// Fetch all photo IDs to clean them up from storage service
+	rows, err := h.db.DB.Query("SELECT id FROM photos WHERE memory_id = $1", memoryID)
+	if err == nil {
+		var photoIDs []string
+		for rows.Next() {
+			var pid string
+			if err := rows.Scan(&pid); err == nil {
+				photoIDs = append(photoIDs, pid)
+			}
+		}
+		rows.Close()
+		for _, pid := range photoIDs {
+			_ = h.storage.Delete(r.Context(), pid)
+		}
+	}
 
 	// Ensure the user actually owns this memory before deleting
 	res, err := h.db.DB.Exec("DELETE FROM memories WHERE id = $1 AND user_id = $2", memoryID, userID)
@@ -359,7 +551,6 @@ func (h *MemoryHandler) DeleteMemory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Broadcast deletion if necessary? For now just return success.
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintf(w, `{"status":"success"}`)
@@ -393,18 +584,15 @@ func (h *MemoryHandler) UpdateMemory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	files := r.MultipartForm.File["images"]
-	// Determine how many photos this memory currently has to enforce the 4 limit,
-	// but for simplicity we will just let the frontend enforce the 4 photo limit
-	// or they can upload up to 4 new ones.
 	if len(files) > 4 {
 		http.Error(w, `{"error":"Maximum 4 images allowed per upload batch"}`, http.StatusBadRequest)
 		return
 	}
 
 	type UploadedPhoto struct {
-		ID          string
-		ImageBase64 string
-		MimeType    string
+		ID       string
+		MimeType string
+		FileSize int
 	}
 	var uploadedPhotos []UploadedPhoto
 
@@ -422,12 +610,23 @@ func (h *MemoryHandler) UpdateMemory(w http.ResponseWriter, r *http.Request) {
 		}
 
 		mimeType := fileHeader.Header.Get("Content-Type")
-		imageBase64 := base64.StdEncoding.EncodeToString(fileBytes)
+		if mimeType == "" {
+			mimeType = "image/jpeg"
+		}
+		photoID := fmt.Sprintf("pho-%d", time.Now().UnixNano())
 		time.Sleep(1 * time.Millisecond)
+
+		_, err = h.storage.Save(r.Context(), photoID, fileBytes, mimeType)
+		if err != nil {
+			log.Printf("Failed to save photo to storage: %v", err)
+			http.Error(w, `{"error":"Failed to save photo file"}`, http.StatusInternalServerError)
+			return
+		}
+
 		uploadedPhotos = append(uploadedPhotos, UploadedPhoto{
-			ID:          fmt.Sprintf("pho-%d", time.Now().UnixNano()),
-			ImageBase64: imageBase64,
-			MimeType:    mimeType,
+			ID:       photoID,
+			MimeType: mimeType,
+			FileSize: len(fileBytes),
 		})
 	}
 
@@ -454,11 +653,19 @@ func (h *MemoryHandler) UpdateMemory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err = tx.Exec(`
-		UPDATE memories 
-		SET title = $1, narrative = $2, lat = $3, lng = $4, location_tag = $5, updated_at = $6
-		WHERE id = $7 AND user_id = $8`,
-		title, narrative, lat, lng, locationTag, updatedAt, memoryID, userID)
+	if h.db.HasPostGIS {
+		_, err = tx.Exec(`
+			UPDATE memories 
+			SET title = $1, narrative = $2, lat = $3, lng = $4, geom = ST_SetSRID(ST_MakePoint($4, $3), 4326), location_tag = $5, updated_at = $6
+			WHERE id = $7 AND user_id = $8`,
+			title, narrative, lat, lng, locationTag, updatedAt, memoryID, userID)
+	} else {
+		_, err = tx.Exec(`
+			UPDATE memories 
+			SET title = $1, narrative = $2, lat = $3, lng = $4, location_tag = $5, updated_at = $6
+			WHERE id = $7 AND user_id = $8`,
+			title, narrative, lat, lng, locationTag, updatedAt, memoryID, userID)
+	}
 	if err != nil {
 		tx.Rollback()
 		log.Printf("Failed to update memory: %v", err)
@@ -468,9 +675,9 @@ func (h *MemoryHandler) UpdateMemory(w http.ResponseWriter, r *http.Request) {
 
 	for _, p := range uploadedPhotos {
 		_, err = tx.Exec(`
-			INSERT INTO photos (id, memory_id, image_base64, mime_type)
-			VALUES ($1, $2, $3, $4)`,
-			p.ID, memoryID, p.ImageBase64, p.MimeType)
+			INSERT INTO photos (id, memory_id, storage_key, mime_type, file_size)
+			VALUES ($1, $2, $3, $4, $5)`,
+			p.ID, memoryID, p.ID, p.MimeType, p.FileSize)
 		if err != nil {
 			tx.Rollback()
 			log.Printf("Failed to insert photo: %v", err)
@@ -488,4 +695,32 @@ func (h *MemoryHandler) UpdateMemory(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintf(w, `{"status":"success","id":"%s"}`, memoryID)
+}
+
+// MigrateLegacyPhotos extracts legacy base64 photos from PostgreSQL and persists them to the storage service.
+func (h *MemoryHandler) MigrateLegacyPhotos(ctx context.Context) {
+	rows, err := h.db.DB.QueryContext(ctx, "SELECT id, image_base64, mime_type FROM photos WHERE image_base64 IS NOT NULL AND image_base64 != '' LIMIT 100")
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	migrated := 0
+	for rows.Next() {
+		var id, b64, mimeType string
+		if err := rows.Scan(&id, &b64, &mimeType); err != nil {
+			continue
+		}
+		data, err := base64.StdEncoding.DecodeString(b64)
+		if err != nil {
+			continue
+		}
+		if _, err := h.storage.Save(ctx, id, data, mimeType); err == nil {
+			_, _ = h.db.DB.ExecContext(ctx, "UPDATE photos SET storage_key = $1, file_size = $2, image_base64 = '' WHERE id = $1", id, len(data))
+			migrated++
+		}
+	}
+	if migrated > 0 {
+		log.Printf("Successfully migrated %d legacy photos from PostgreSQL to Object Storage.", migrated)
+	}
 }

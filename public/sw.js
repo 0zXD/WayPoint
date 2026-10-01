@@ -77,6 +77,19 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
+  // Direct MapTiler CDN requests (satellite/vector tiles, styles, glyphs)
+  if (url.hostname === 'api.maptiler.com') {
+    // Only intercept if user is explicitly downloading an offline pack or is currently offline
+    if (url.searchParams.has('offline') || !navigator.onLine) {
+      event.respondWith(tileFirst(request));
+      return;
+    }
+    // Online navigation: bypass Service Worker completely!
+    // This allows the browser to connect directly to MapTiler's Cloudflare Anycast Edge CDN
+    // using multiplexed HTTP/3 (QUIC) and HTTP/2 with zero hop delay or service worker latency.
+    return;
+  }
+
   // Static assets: JS, CSS, fonts, images
   const isStaticAsset =
     /\.(js|css|woff2?|ttf|otf|png|jpg|jpeg|webp|svg|ico|webmanifest|json)(\?.*)?$/.test(url.pathname);

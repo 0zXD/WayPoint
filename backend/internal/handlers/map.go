@@ -370,6 +370,13 @@ func (h *MapHandler) GetStyle(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		log.Printf("MapTiler returned status %d for style %s: %s", resp.StatusCode, styleID, string(bodyBytes))
+		http.Error(w, fmt.Sprintf(`{"error":"MapTiler returned status %d"}`, resp.StatusCode), resp.StatusCode)
+		return
+	}
+
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		http.Error(w, `{"error":"Failed to read map style"}`, http.StatusInternalServerError)
@@ -470,6 +477,13 @@ func (h *MapHandler) Proxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		log.Printf("MapTiler returned status %d for %s: %s", resp.StatusCode, path, string(bodyBytes))
+		http.Error(w, fmt.Sprintf("MapTiler returned status %d", resp.StatusCode), resp.StatusCode)
+		return
+	}
 
 	if ct := resp.Header.Get("Content-Type"); ct != "" {
 		w.Header().Set("Content-Type", ct)

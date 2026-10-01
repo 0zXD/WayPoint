@@ -38,3 +38,12 @@ export interface LoginResponse {
   token: string;
   user: AuthUser;
 }
+
+export interface MemoryCluster {
+  key: string;
+  lat: number;
+  lng: number;
+  count: number;
+  memories: Memory[];
+}
+

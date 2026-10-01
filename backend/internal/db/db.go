@@ -15,6 +15,7 @@ import (
 
 type DB struct {
 	*sql.DB
+	HasPostGIS bool
 }
 
 func Connect(cfg *config.Config) (*DB, error) {
@@ -67,6 +68,43 @@ func (db *DB) InitSchema() error {
 	if err != nil {
 		return fmt.Errorf("failed to execute init schema: %w", err)
 	}
+
+	// Dynamic incremental migrations for photos table
+	_, _ = db.Exec(`
+		ALTER TABLE photos ADD COLUMN IF NOT EXISTS storage_key TEXT DEFAULT '';
+		ALTER TABLE photos ADD COLUMN IF NOT EXISTS file_size INT DEFAULT 0;
+		ALTER TABLE photos ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
+		ALTER TABLE photos ALTER COLUMN image_base64 DROP NOT NULL;
+	`)
+
+	// Detect and initialize PostGIS if extension is available
+	_, _ = db.Exec("CREATE EXTENSION IF NOT EXISTS postgis;")
+	var postgisCount int
+	err = db.QueryRow("SELECT count(*) FROM pg_extension WHERE extname = 'postgis'").Scan(&postgisCount)
+	if err == nil && postgisCount > 0 {
+		_, err = db.Exec(`
+			DO $$
+			BEGIN
+				IF NOT EXISTS (
+					SELECT 1 FROM information_schema.columns 
+					WHERE table_name = 'memories' AND column_name = 'geom'
+				) THEN
+					ALTER TABLE memories ADD COLUMN geom GEOMETRY(Point, 4326);
+					UPDATE memories SET geom = ST_SetSRID(ST_MakePoint(lng, lat), 4326);
+					CREATE INDEX IF NOT EXISTS idx_memories_geom ON memories USING GIST (geom);
+				END IF;
+			END $$;
+		`)
+		if err == nil {
+			db.HasPostGIS = true
+			fmt.Println("PostGIS extension active: Native spatial GIST indexing enabled.")
+		}
+	}
+
+	if !db.HasPostGIS {
+		fmt.Println("Standard PostgreSQL spatial indexing active (idx_memories_spatial).")
+	}
+
 	return nil
 }
 

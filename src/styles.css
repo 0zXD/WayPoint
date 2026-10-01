@@ -172,6 +172,7 @@
 .leaflet-control-attribution a { color: var(--color-primary) !important; }
 
 .memory-pin {
+  position: relative;
   width: 28px;
   height: 28px;
   border-radius: 50% 50% 50% 0;
@@ -179,6 +180,12 @@
   transform: rotate(-45deg);
   box-shadow: 0 6px 18px -6px oklch(0.4 0.2 265 / 0.6);
   border: 2px solid var(--color-background);
+  transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.25s ease;
+  cursor: pointer;
+}
+.memory-pin:hover {
+  transform: rotate(-45deg) scale(1.18);
+  box-shadow: 0 10px 24px -4px oklch(0.4 0.2 265 / 0.8);
 }
 .memory-pin::after {
   content: "";
@@ -191,6 +198,27 @@
   background: oklch(0.75 0.18 85);
   box-shadow: 0 6px 18px -6px oklch(0.75 0.18 85 / 0.6);
   animation: draft-pulse 2s ease-in-out infinite;
+}
+.pin-badge {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  background: var(--color-primary);
+  color: var(--color-primary-foreground);
+  border-radius: 9999px;
+  font-size: 10px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.35);
+  border: 1.5px solid var(--color-background);
+  transform: rotate(45deg); /* Counteracts parent rotate(-45deg) so the number stays upright */
+  z-index: 10;
+  pointer-events: none;
 }
 @keyframes draft-pulse {
   0%, 100% { opacity: 1; }

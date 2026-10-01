@@ -69,11 +69,19 @@ export function UploadModal({ mapCenter }: { mapCenter: { lat: number; lng: numb
     if (isNaN(parsedLat) || isNaN(parsedLng)) return;
     setIsGeocodingTag(true);
     try {
-      // Use MapTiler reverse geocoding (expects lng,lat format)
-      const res = await fetch(
-        `/api/v1/map/proxy/geocoding/${parsedLng},${parsedLat}.json?limit=1&language=en`
-      );
-      if (!res.ok) return;
+      // Use direct MapTiler reverse geocoding with proxy fallback
+      const key = import.meta.env.VITE_MAPTILER_API_KEY || "3pLaY3WqeKXPqQvGUWll";
+      let res: Response | null = null;
+      try {
+        res = await fetch(
+          `https://api.maptiler.com/geocoding/${parsedLng},${parsedLat}.json?key=${key}&limit=1&language=en`
+        );
+      } catch {
+        res = await fetch(
+          `/api/v1/map/proxy/geocoding/${parsedLng},${parsedLat}.json?limit=1&language=en`
+        );
+      }
+      if (!res || !res.ok) return;
       const data = await res.json();
       
       if (data.features && data.features.length > 0) {

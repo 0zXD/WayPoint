@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { formatDistanceToNow } from "date-fns";
 import { Activity, ChevronRight, LogIn, MessageSquare, Share2, Sparkles } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { connectActivity, type WSStatus } from "@/lib/ws";
 import { useAppStore } from "@/lib/store";

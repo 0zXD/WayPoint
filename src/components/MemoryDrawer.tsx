@@ -1,5 +1,4 @@
 import { useRef } from "react";
-import { useQuery } from "@tanstack/react-query";
 import { formatDistanceToNow } from "date-fns";
 import { MapPin, X, ChevronLeft, ChevronRight } from "lucide-react";
 import {

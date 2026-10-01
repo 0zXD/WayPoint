@@ -37,7 +37,7 @@ function NotFoundComponent() {
   );
 }
 
-function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
+function ErrorComponent({ reset }: { error: Error; reset: () => void }) {
   const router = useRouter();
 
   return (

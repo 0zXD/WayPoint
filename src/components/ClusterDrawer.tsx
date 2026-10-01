@@ -14,13 +14,13 @@ import { Separator } from "@/components/ui/separator";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { useAppStore } from "@/lib/store";
 import { clusterKey } from "./MapCanvas";
-import { deleteMemory, deletePhoto } from "@/lib/memories";
+import { deletePhoto } from "@/lib/memories";
 import type { Memory } from "@/lib/types";
 
 export function ClusterDrawer({ memories }: { memories: Memory[] }) {
   const openKey = useAppStore((s) => s.openClusterKey);
   const setOpenKey = useAppStore((s) => s.setOpenClusterKey);
-
+  
   const items = openKey
     ? memories.filter((m) => clusterKey(m) === openKey)
     : [];
@@ -74,8 +74,7 @@ function MemoryEntry({ memory, showSep }: { memory: Memory; showSep: boolean }) 
   const initials = memory.authorName?.slice(0, 2).toUpperCase() ?? "??";
   const user = useAppStore((s) => s.user);
   const qc = useQueryClient();
-  const setOpenKey = useAppStore((s) => s.setOpenClusterKey);
-
+  
   // memory.authorName == user.name is used since the frontend doesn't have memory.userId yet,
   // but if we expose userId in types, we could check that. For now, authorName check works.
   const isOwner = user && user.name === memory.authorName;
